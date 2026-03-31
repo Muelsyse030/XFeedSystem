@@ -1,0 +1,14 @@
+server:
+  port: 8000
+
+mysql:
+  dsn: "root:123456@tcp(127.0.0.1:3308)/feed_community?charset=utf8mb4&parseTime=True&loc=Local"
+
+redis:
+  addr: "127.0.0.1:6380"
+  password: ""
+  db: 0
+
+jwt:
+  secret: "your-secret-key"
+  expire_hours: 72
