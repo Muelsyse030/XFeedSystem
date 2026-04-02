@@ -18,6 +18,7 @@ type UserRepo interface {
 	Followbyid(ctx context.Context, user_id int64, follow_id int64) error
 	Delete(ctx context.Context, userID, followID int64) error
 	Exists(ctx context.Context, userID, followID int64) (bool, error)
+	GetFollowingIDs(ctx context.Context, userID int64) ([]int64, error)
 }
 type GormUserRepo struct {
 	db *gorm.DB
@@ -85,4 +86,15 @@ func (r *GormUserRepo) Exists(ctx context.Context, userID, followID int64) (bool
 		return false, err
 	}
 	return count > 0, nil
+}
+func (r *GormUserRepo) GetFollowingIDs(ctx context.Context, userID int64) ([]int64, error) {
+	var ids []int64
+	err := r.db.WithContext(ctx).
+		Model(&model.Follow{}).
+		Where("user_id = ?", userID).
+		Pluck("follow_id", &ids).Error
+	if err != nil {
+		return nil, err
+	}
+	return ids, nil
 }

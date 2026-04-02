@@ -34,7 +34,7 @@ func SetupRouter(db *gorm.DB) *gin.Engine {
 
 	r.GET("/notes/:id", noteHandler.Detail)
 	r.GET("/users/:id/notes", noteHandler.ListByUser)
-	r.GET("/feed", feedHandler.List)
+	r.GET("/feed", middleware.OptionalJWTAuth(), feedHandler.List)
 	auth := r.Group("/")
 	auth.Use(middleware.JWTAuth())
 	{

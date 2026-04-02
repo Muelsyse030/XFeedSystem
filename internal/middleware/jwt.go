@@ -77,3 +77,27 @@ func JWTAuth() gin.HandlerFunc {
 		c.Next()
 	}
 }
+func OptionalJWTAuth() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		authHeader := c.GetHeader("Authorization")
+		if authHeader == "" {
+			c.Next()
+			return
+		}
+
+		parts := strings.SplitN(authHeader, " ", 2)
+		if len(parts) != 2 || parts[0] != "Bearer" {
+			c.Next()
+			return
+		}
+
+		claims, err := ParseToken(parts[1])
+		if err == nil {
+			c.Set("user_id", claims.UserID)
+			c.Set("userID", claims.UserID)
+			c.Set("username", claims.Username)
+		}
+
+		c.Next()
+	}
+}
