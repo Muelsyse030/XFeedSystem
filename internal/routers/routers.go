@@ -41,9 +41,16 @@ func SetupRouter(db *gorm.DB) *gin.Engine {
 		auth.GET("/me", userHandler.Me)
 		auth.POST("/notes", noteHandler.Create)
 		auth.DELETE("/notes/:id", noteHandler.Delete)
+		auth.POST("/notes/:id/like",noteHandler.Like)
+		auth.DELETE("/notes/:id/unlike",noteHandler.Unlike)
+		// auth.POST("/notes/:id/favorite",noteHandler.Favorite)
+		// auth.DELETE("/notes/:id/unfavorite",noteHandler.Unfavorite)
+		// auth.GET("/me/favorites",noteHandler.ListFavorites)
+		// auth.POST("/notes/:id/comments",noteHandler.Comment)
 		auth.POST("/users/:id/follow", userHandler.Follow)
 		auth.DELETE("users/:id/unfollow", userHandler.Unfollow)
 		auth.POST("/users/:id/isfollow", userHandler.Isfollow)
+		
 	}
 	return r
 }

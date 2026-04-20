@@ -2,6 +2,7 @@ package handler
 
 import (
 	"XFeedSystem/internal/service"
+	"errors"
 	"net/http"
 	"strconv"
 	"time"
@@ -193,6 +194,98 @@ func (h *NoteHandler) Delete(c *gin.Context) {
 		return
 	}
 
+	c.JSON(http.StatusOK, gin.H{
+		"code":    0,
+		"message": "ok",
+	})
+}
+
+func getUserIDFromContext(c *gin.Context) (int64, bool) {
+	if v, ok := c.Get("user_id"); ok {
+		if uid, ok2 := v.(int64); ok2 {
+			return uid, true
+		}
+	}
+	if v, ok := c.Get("userID"); ok {
+		if uid, ok2 := v.(int64); ok2 {
+			return uid, true
+		}
+	}
+	return 0, false
+}
+
+func (h *NoteHandler) Like(c *gin.Context) {
+	idStr := c.Param("id")
+	noteID , err := strconv.ParseInt(idStr,10,64)
+	if err != nil{
+		c.JSON(http.StatusBadRequest,gin.H{
+			"code" : 4002,
+			"message" : "invalid note id",
+		})
+		return
+	}
+	userID ,ok := getUserIDFromContext(c)
+	if !ok{
+		c.JSON(http.StatusUnauthorized,gin.H{
+			"code" : 4010,
+			"message" : "unzuthorized",
+		})
+		return
+	}
+	_,err = h.noteService.Like(c.Request.Context(),noteID,userID)
+	if err != nil{
+		if errors.Is(err,service.ErrInvalidUserID){
+			c.JSON(http.StatusNotFound,gin.H{
+				"code" : 4040,
+				"message" :"note not found",
+			})
+			return
+		}
+		c.JSON(http.StatusInternalServerError,gin.H{
+			"code" : 5005,
+			"message" : "like note failed",
+		})
+		return
+	}
+	c.JSON(http.StatusOK,gin.H{
+		"code" : 0,
+		"message" : "ok",
+	})
+}
+
+func (h *NoteHandler) Unlike(c *gin.Context) {
+	idStr := c.Param("id")
+	noteID, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    4002,
+			"message": "invalid note id",
+		})
+		return
+	}
+	userID, ok := getUserIDFromContext(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"code":    4010,
+			"message": "unauthorized",
+		})
+		return
+	}
+	err = h.noteService.Unlike(c.Request.Context(), noteID, userID)
+	if err != nil {
+		if errors.Is(err, service.ErrNoteNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{
+				"code":    4040,
+				"message": "note not found",
+			})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    5006,
+			"message": "unlike note failed",
+		})
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"code":    0,
 		"message": "ok",

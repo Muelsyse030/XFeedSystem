@@ -1,0 +1,608 @@
+openapi: 3.0.3
+info:
+  title: XFeedSystem API
+  version: "1.0"
+  description: |
+    与 `docs/api.md` 同步的 OpenAPI 描述。部分接口响应字段风格不完全统一，请以各 path 的 response 示例为准。
+servers:
+  - url: http://127.0.0.1:8000
+    description: 本地默认（见 configs/config.yaml server.port）
+
+tags:
+  - name: health
+  - name: auth
+  - name: user
+  - name: notes
+  - name: feed
+
+paths:
+  /ping:
+    get:
+      tags: [health]
+      summary: 健康检查
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: pong
+
+  /register:
+    post:
+      tags: [auth]
+      summary: 注册
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterRequest"
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: 注册成功
+        "400":
+          description: 参数或业务错误
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+
+  /login:
+    post:
+      tags: [auth]
+      summary: 登录，返回 JWT
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: integer
+                    example: 0
+                  message:
+                    type: string
+                    example: ok
+                  data:
+                    type: object
+                    properties:
+                      token:
+                        type: string
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+        "500":
+          description: 签发 token 失败
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+
+  /me:
+    get:
+      tags: [user]
+      summary: 当前用户信息
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeResponse"
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+        "401":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthMessage"
+
+  /notes:
+    post:
+      tags: [notes]
+      summary: 创建笔记
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateNoteRequest"
+      responses:
+        "200":
+          description: 成功（注意 code 为 200）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: integer
+                    example: 200
+                  message:
+                    type: string
+                  data:
+                    $ref: "#/components/schemas/NoteDataWithType"
+        "400":
+          description: JSON 绑定失败
+        "401":
+          description: 未登录
+        "500":
+          description: 创建失败
+
+  /notes/{id}:
+    get:
+      tags: [notes]
+      summary: 笔记详情
+      parameters:
+        - $ref: "#/components/parameters/NoteId"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: integer
+                    example: 0
+                  message:
+                    type: string
+                  data:
+                    $ref: "#/components/schemas/NoteData"
+        "400":
+          description: 非法 id
+        "500":
+          description: 查询失败
+    delete:
+      tags: [notes]
+      summary: 删除笔记（本人）
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/NoteId"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: integer
+                    example: 0
+                  message:
+                    type: string
+        "400":
+          description: 非法 id
+        "401":
+          description: 未授权
+        "500":
+          description: 删除失败
+
+  /users/{id}/notes:
+    get:
+      tags: [notes]
+      summary: 某用户的笔记列表（游标分页）
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: cursor
+          in: query
+          schema:
+            type: integer
+            format: int64
+            default: 0
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 10
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserNotesListResponse"
+        "400":
+          description: 非法用户 id
+        "500":
+          description: 列表失败
+
+  /feed:
+    get:
+      tags: [feed]
+      summary: Feed 流（推荐 / 关注）
+      description: |
+        - `type=foryou`：可不传 Token；传合法 Token 时中间件会写入用户信息（便于后续扩展）。
+        - `type=following`：必须 `Authorization: Bearer`。
+      parameters:
+        - name: type
+          in: query
+          schema:
+            type: string
+            enum: [foryou, following]
+            default: foryou
+        - name: cursor
+          in: query
+          schema:
+            type: string
+            description: "<published_at_unix>_<note_id>，首次可省略"
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 10
+      security: []
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FeedResponse"
+        "400":
+          description: limit 非法或 type 不支持
+        "401":
+          description: following 且未登录
+        "500":
+          description: 服务端错误（含游标解析失败等）
+
+  /users/{id}/follow:
+    post:
+      tags: [user]
+      summary: 关注用户
+      description: 路径中的 `id` 当前实现未参与校验，以请求体为准。
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FollowRequest"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FollowOkResponse"
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+
+  /users/{id}/unfollow:
+    delete:
+      tags: [user]
+      summary: 取消关注
+      description: 路径中的 `id` 当前实现未参与校验，以请求体为准。
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FollowRequest"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UnfollowOkResponse"
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+
+  /users/{id}/isfollow:
+    post:
+      tags: [user]
+      summary: 是否已关注
+      description: 路径中的 `id` 当前实现未参与校验，以请求体为准。
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FollowRequest"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: integer
+                    example: 200
+                  message:
+                    type: string
+                    example: ok
+                  follow:
+                    type: boolean
+        "500":
+          description: 查询失败
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: HS256，Claims 含 uid、username；详见 api.md
+
+  parameters:
+    NoteId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int64
+
+  schemas:
+    ErrorMessage:
+      type: object
+      properties:
+        error:
+          type: string
+
+    AuthMessage:
+      type: object
+      properties:
+        message:
+          type: string
+
+    RegisterRequest:
+      type: object
+      required: [username, password, confirm_password]
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+        confirm_password:
+          type: string
+
+    LoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+
+    FollowRequest:
+      type: object
+      required: [user_id, follow_id]
+      properties:
+        user_id:
+          type: integer
+          format: int64
+        follow_id:
+          type: integer
+          format: int64
+
+    MeResponse:
+      type: object
+      properties:
+        code:
+          type: integer
+          example: 0
+        message:
+          type: string
+        data:
+          type: object
+          properties:
+            id:
+              type: integer
+              format: int64
+            username:
+              type: string
+
+    CreateNoteRequest:
+      type: object
+      required: [title, content]
+      properties:
+        title:
+          type: string
+        content:
+          type: string
+
+    NoteData:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        author_id:
+          type: integer
+          format: int64
+        title:
+          type: string
+        content:
+          type: string
+        published_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+
+    NoteDataWithType:
+      allOf:
+        - $ref: "#/components/schemas/NoteData"
+        - type: object
+          properties:
+            type:
+              type: integer
+              format: int32
+
+    AuthorInfo:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        username:
+          type: string
+        avatar_url:
+          type: string
+
+    FeedItem:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        author_id:
+          type: integer
+          format: int64
+        author:
+          $ref: "#/components/schemas/AuthorInfo"
+        title:
+          type: string
+        content:
+          type: string
+        type:
+          type: integer
+          format: int32
+        published_at:
+          type: string
+          format: date-time
+
+    FeedResponse:
+      type: object
+      properties:
+        code:
+          type: integer
+          example: 0
+        message:
+          type: string
+          example: ok
+        data:
+          type: object
+          properties:
+            items:
+              type: array
+              items:
+                $ref: "#/components/schemas/FeedItem"
+            next_cursor:
+              type: string
+
+    UserNotesListResponse:
+      type: object
+      properties:
+        code:
+          type: integer
+          example: 200
+        message:
+          type: string
+        data:
+          type: object
+          properties:
+            list:
+              type: array
+              items:
+                $ref: "#/components/schemas/NoteData"
+            next_cursor:
+              type: integer
+              format: int64
+
+    FollowOkResponse:
+      type: object
+      properties:
+        code:
+          type: integer
+          example: 0
+        message:
+          type: string
+        data:
+          type: object
+          properties:
+            user_id:
+              type: integer
+              format: int64
+            follow_id:
+              type: integer
+              format: int64
+
+    UnfollowOkResponse:
+      type: object
+      properties:
+        code:
+          type: integer
+          example: 0
+        message:
+          type: string
+        data:
+          type: object
+          properties:
+            user_id:
+              type: integer
+              format: int64
+            unfollow_id:
+              type: integer
+              format: int64

@@ -2,6 +2,8 @@
 
 本文档基于当前代码实现整理，覆盖接口说明、调用方式、请求参数、响应格式、鉴权、分页游标和完整 cURL 示例。
 
+机器可读版本（可导入 Apifox / Swagger UI）：[`docs/openapi.yaml`](openapi.yaml)
+
 ## 1. 基础信息
 
 - Base URL: `http://127.0.0.1:8000`
@@ -76,7 +78,7 @@ JWT 特征：
 - `limit` 允许范围 `1~50`，否则后端强制为 `10`
 - 首次请求建议 `cursor=0`
 
-#### Feed `/feed`
+#### Feed `/feed`（`type=foryou` 与 `type=following` 共用）
 - 使用字符串游标 `cursor`
 - 编码格式：`<published_at_unix>_<note_id>`，例如 `1710000000_123`
 - 查询逻辑：
@@ -84,6 +86,7 @@ JWT 特征：
   - 或 `published_at = cursor.published_at 且 id < cursor.id`
 - 排序：`published_at DESC, id DESC`
 - `limit` 允许范围 `1~50`，否则后端强制为 `10`
+- `type=following` 时必须携带有效 JWT；`type=foryou` 可不鉴权（可选 Token 仅用于中间件写入用户信息）
 
 ## 3. 接口明细
 
@@ -308,6 +311,7 @@ curl -X GET 'http://127.0.0.1:8000/me' \
     "author_id": 1,
     "title": "Go 并发学习",
     "content": "今天复习了 goroutine 和 channel",
+    "type": 1,
     "published_at": "2026-03-20T10:00:00Z",
     "created_at": "2026-03-20T10:00:00Z"
   }
@@ -532,25 +536,30 @@ curl -X DELETE 'http://127.0.0.1:8000/notes/100' \
 
 ### `GET /feed`
 
-说明：获取推荐流（当前仅支持 `type=foryou`）。
+说明：获取 Feed；`type=foryou` 为推荐流，`type=following` 为「我关注的人」的动态。两种类型使用相同的字符串游标规则（见上文 2.3）。
+
+鉴权：
+- `type=foryou`：可不传 Token；若传合法 `Authorization`，中间件会解析并写入 `userID`（便于扩展）。
+- `type=following`：必须 `Bearer Token`。
 
 查询参数：
 
 | 参数 | 类型 | 必填 | 默认值 | 说明 |
 |---|---|---|---|---|
-| type | string | 否 | foryou | 仅支持 foryou |
+| type | string | 否 | foryou | `foryou` \| `following` |
 | cursor | string | 否 | 空 | 游标格式 `<unix_ts>_<id>` |
-| limit | int | 否 | 10 | 每页条数，建议 1~50 |
+| limit | int | 否 | 10 | 每页条数；非法时回退为 `10`；`<=0` 或 `>50` 时强制为 `10` |
 
 请求示例：
-- 首次：`/feed?type=foryou&limit=10`
-- 下一页：`/feed?type=foryou&cursor=1710000000_123&limit=10`
+- 推荐首次：`/feed?type=foryou&limit=10`
+- 推荐下一页：`/feed?type=foryou&cursor=1710000000_123&limit=10`
+- 关注流：`/feed?type=following&limit=10`（需 Token）
 
-成功响应：`200`
+成功响应：`200`（`message` 为小写 `ok`）
 ```json
 {
   "code": 0,
-  "message": "OK",
+  "message": "ok",
   "data": {
     "items": [
       {
@@ -572,32 +581,174 @@ curl -X DELETE 'http://127.0.0.1:8000/notes/100' \
 }
 ```
 
+说明：`foryou` 正文中摘取约 100 字，`following` 约 120 字（服务层 `BuildSummary`）。
+
 失败示例：
-- `400`
+- `400`（不支持的 type）
 ```json
 {
-  "code": "4002",
-  "message": "invalid feed type"
+  "code": 4002,
+  "message": "unsupported feed type"
 }
 ```
-- `400`
+- `400`（limit 非数字）
 ```json
 {
   "code": 4001,
   "message": "invalid limit"
 }
 ```
-- `500`
+- `401`（`following` 且未登录或无效用户）
+```json
+{
+  "code": 4010,
+  "message": "unauthorized"
+}
+```
+- `500`（游标解析或服务错误，message 为具体错误文案）
 ```json
 {
   "code": 5001,
-  "message": "invalid cursor"
+  "message": "<错误详情>"
 }
 ```
 
 cURL：
 ```bash
 curl -X GET 'http://127.0.0.1:8000/feed?type=foryou&limit=10'
+```
+
+```bash
+curl -X GET 'http://127.0.0.1:8000/feed?type=following&limit=10' \
+  -H 'Authorization: Bearer <JWT_TOKEN>'
+```
+
+---
+
+## 3.10 关注用户
+
+### `POST /users/:id/follow`
+
+说明：`user_id` 关注 `follow_id`。当前处理器**未读取路径参数 `:id`**，以 JSON 体为准（路径中可写占位，例如与 `follow_id` 相同以便路由匹配）。
+
+鉴权：需要 `Bearer Token`
+
+请求体：
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| user_id | int64 | 是 | 发起关注的用户 ID |
+| follow_id | int64 | 是 | 被关注用户 ID |
+
+请求示例：
+```json
+{
+  "user_id": 1,
+  "follow_id": 2
+}
+```
+
+成功响应：`200`
+```json
+{
+  "code": 0,
+  "message": "ok",
+  "data": {
+    "user_id": 1,
+    "follow_id": 2
+  }
+}
+```
+
+失败示例：`400`
+```json
+{
+  "error": "<业务或绑定错误>"
+}
+```
+
+cURL：
+```bash
+curl -X POST 'http://127.0.0.1:8000/users/2/follow' \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer <JWT_TOKEN>' \
+  -d '{"user_id":1,"follow_id":2}'
+```
+
+---
+
+## 3.11 取消关注
+
+### `DELETE /users/:id/unfollow`
+
+说明：取消关注；路径参数 `:id` 同样**未参与业务逻辑**，以 JSON 体为准。
+
+鉴权：需要 `Bearer Token`
+
+请求体：与关注相同（`user_id`、`follow_id`）
+
+成功响应：`200`
+```json
+{
+  "code": 0,
+  "message": "ok",
+  "data": {
+    "user_id": 1,
+    "unfollow_id": 2
+  }
+}
+```
+
+失败示例：`400`
+```json
+{
+  "error": "<业务或绑定错误>"
+}
+```
+
+cURL：
+```bash
+curl -X DELETE 'http://127.0.0.1:8000/users/2/unfollow' \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer <JWT_TOKEN>' \
+  -d '{"user_id":1,"follow_id":2}'
+```
+
+---
+
+## 3.12 是否已关注
+
+### `POST /users/:id/isfollow`
+
+说明：查询 `user_id` 是否已关注 `follow_id`；路径 `:id` **未参与业务逻辑**。
+
+鉴权：需要 `Bearer Token`
+
+请求体：与关注相同
+
+成功响应：`200`
+```json
+{
+  "code": 200,
+  "message": "ok",
+  "follow": true
+}
+```
+
+失败示例：`500`
+```json
+{
+  "code": 0,
+  "message": "error"
+}
+```
+
+cURL：
+```bash
+curl -X POST 'http://127.0.0.1:8000/users/2/isfollow' \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer <JWT_TOKEN>' \
+  -d '{"user_id":1,"follow_id":2}'
 ```
 
 ---
@@ -637,10 +788,19 @@ curl -X GET 'http://127.0.0.1:8000/me' \
 curl -X GET 'http://127.0.0.1:8000/feed?type=foryou&limit=10'
 ```
 
+6) 关注 / 取关 / 是否关注（需替换 ID）
+```bash
+curl -X POST 'http://127.0.0.1:8000/users/2/follow' \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer <JWT_TOKEN>' \
+  -d '{"user_id":1,"follow_id":2}'
+```
+
 ## 5. 已知实现差异（调用方需注意）
 
 - 不同接口的 `code` 与 `message/error` 字段风格不统一，前端需按接口兼容解析。
-- `/feed` 的 `invalid feed type` 错误里 `code` 是字符串 `"4002"`，其余多数是数值。
-- `/notes` 创建接口成功 `code` 为 `200`，而部分接口成功 `code` 为 `0`。
+- `/notes` 创建接口成功 `code` 为 `200`，而部分接口成功 `code` 为 `0`；`/users/:id/isfollow` 成功时 `code` 为 `200`。
+- `POST/DELETE /users/:id/follow|unfollow|isfollow` 路径中的 `:id` 当前未被 handler 使用，与 body 可不一致；联调时建议三者一致以免混淆。
+- `GET /feed` 在 `type=foryou` 下可不鉴权；`type=following` 必须带 Token。
 
-后续如需，我可以再给你补一份 OpenAPI 3.0 (`yaml`) 版本，便于导入 Apifox / Swagger UI。
+OpenAPI 3.0 定义见同目录 [`openapi.yaml`](openapi.yaml)。

@@ -18,6 +18,15 @@ type Note struct {
 	UpdatedAt   time.Time
 	PublishedAt time.Time `gorm:"not null;index"`
 }
+type NoteLike struct{
+	ID        int64 `gorm:"primaryKey"`
+	NoteID    int64 `gorm:"not null;index:idx_note_likes_note_id;uniqueIndex:uk_note_user_like,priority:1"`
+	UserID    int64 `gorm:"not null;index:idx_note_likes_user_id;uniqueIndex:uk_note_user_like,priority:2"`
+	CreatedAt time.Time 
+}
+func (NoteLike) TableName() string {
+	return "note_likes"
+}
 
 func (Note) TableName() string {
 	return "notes"

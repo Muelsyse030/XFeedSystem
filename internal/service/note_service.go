@@ -4,7 +4,14 @@ import (
 	"XFeedSystem/internal/model"
 	"XFeedSystem/internal/repo"
 	"context"
+	"errors"
 	"time"
+	"gorm.io/gorm"
+)
+
+var (
+	ErrInvalidUserID = errors.New("invalid user id")
+	ErrNoteNotFound  = errors.New("note not found")
 )
 
 type NoteService struct {
@@ -36,4 +43,32 @@ func (s *NoteService) GetByID(ctx context.Context, id int64) (*model.Note, error
 }
 func (s *NoteService) Delete(ctx context.Context, id int64, authorID int64) error {
 	return s.repo.DeleteByID(ctx, id, authorID)
+}
+func (s *NoteService) Like(ctx context.Context, noteID, userID int64) (bool, error) {
+	if userID <= 0{
+		return false,ErrInvalidUserID
+	}
+	if _, err := s.repo.GetByID(ctx, noteID); err != nil {
+		if errors.Is(err,gorm.ErrRecordNotFound){
+			return false,ErrNoteNotFound
+		}
+		return false,err
+	}
+	_,err :=s.repo.Like(ctx , noteID , userID)
+
+	return true,err
+}
+
+func (s *NoteService) Unlike(ctx context.Context , noteID ,userID int64) error {
+	if userID <= 0{
+		return ErrInvalidUserID
+	}
+	if _,err := s.repo.GetByID(ctx,noteID); err != nil {
+		if errors.Is(err,gorm.ErrRecordNotFound){
+			return ErrNoteNotFound
+		}
+		return err
+	}
+	_,err := s.repo.Unlike(ctx,noteID,userID)
+	return err
 }
