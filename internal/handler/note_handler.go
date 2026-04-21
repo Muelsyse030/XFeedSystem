@@ -168,20 +168,11 @@ func (h *NoteHandler) Delete(c *gin.Context) {
 		return
 	}
 
-	uidValue, exists := c.Get("userID")
-	if !exists {
+	userID, ok := getUserIDFromContext(c)
+	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"code":    4010,
 			"message": "unauthorized",
-		})
-		return
-	}
-
-	userID, ok := uidValue.(int64)
-	if !ok {
-		c.JSON(http.StatusUnauthorized, gin.H{
-			"code":    4011,
-			"message": "invalid user id",
 		})
 		return
 	}
@@ -216,40 +207,47 @@ func getUserIDFromContext(c *gin.Context) (int64, bool) {
 
 func (h *NoteHandler) Like(c *gin.Context) {
 	idStr := c.Param("id")
-	noteID , err := strconv.ParseInt(idStr,10,64)
-	if err != nil{
-		c.JSON(http.StatusBadRequest,gin.H{
-			"code" : 4002,
-			"message" : "invalid note id",
+	noteID, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    4002,
+			"message": "invalid note id",
 		})
 		return
 	}
-	userID ,ok := getUserIDFromContext(c)
-	if !ok{
-		c.JSON(http.StatusUnauthorized,gin.H{
-			"code" : 4010,
-			"message" : "unzuthorized",
+	userID, ok := getUserIDFromContext(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"code":    4010,
+			"message": "unauthorized",
 		})
 		return
 	}
-	_,err = h.noteService.Like(c.Request.Context(),noteID,userID)
-	if err != nil{
-		if errors.Is(err,service.ErrInvalidUserID){
-			c.JSON(http.StatusNotFound,gin.H{
-				"code" : 4040,
-				"message" :"note not found",
+	_, err = h.noteService.Like(c.Request.Context(), noteID, userID)
+	if err != nil {
+		if errors.Is(err, service.ErrInvalidUserID) {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"code":    4003,
+				"message": "invalid user id",
 			})
 			return
 		}
-		c.JSON(http.StatusInternalServerError,gin.H{
-			"code" : 5005,
-			"message" : "like note failed",
+		if errors.Is(err, service.ErrNoteNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{
+				"code":    4040,
+				"message": "note not found",
+			})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    5005,
+			"message": "like note failed",
 		})
 		return
 	}
-	c.JSON(http.StatusOK,gin.H{
-		"code" : 0,
-		"message" : "ok",
+	c.JSON(http.StatusOK, gin.H{
+		"code":    0,
+		"message": "ok",
 	})
 }
 
@@ -273,6 +271,13 @@ func (h *NoteHandler) Unlike(c *gin.Context) {
 	}
 	err = h.noteService.Unlike(c.Request.Context(), noteID, userID)
 	if err != nil {
+		if errors.Is(err, service.ErrInvalidUserID) {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"code":    4003,
+				"message": "invalid user id",
+			})
+			return
+		}
 		if errors.Is(err, service.ErrNoteNotFound) {
 			c.JSON(http.StatusNotFound, gin.H{
 				"code":    4040,
@@ -289,5 +294,149 @@ func (h *NoteHandler) Unlike(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"code":    0,
 		"message": "ok",
+	})
+}
+
+func (h *NoteHandler) Favorite(c *gin.Context) {
+	idStr := c.Param("id")
+	noteID, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    4002,
+			"message": "invalid note id",
+		})
+		return
+	}
+	userID, ok := getUserIDFromContext(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"code":    4010,
+			"message": "unauthorized",
+		})
+		return
+	}
+	_, err = h.noteService.Favorite(c.Request.Context(), noteID, userID)
+	if err != nil {
+		if errors.Is(err, service.ErrInvalidUserID) {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"code":    4003,
+				"message": "invalid user id",
+			})
+			return
+		}
+		if errors.Is(err, service.ErrNoteNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{
+				"code":    4040,
+				"message": "note not found",
+			})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    5007,
+			"message": "favorite note failed",
+		})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"code":    0,
+		"message": "ok",
+	})
+}
+
+func (h *NoteHandler) Unfavorite(c *gin.Context) {
+	idStr := c.Param("id")
+	noteID, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    4002,
+			"message": "invalid note id",
+		})
+		return
+	}
+	userID, ok := getUserIDFromContext(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"code":    4010,
+			"message": "unauthorized",
+		})
+		return
+	}
+	err = h.noteService.Unfavorite(c.Request.Context(), noteID, userID)
+	if err != nil {
+		if errors.Is(err, service.ErrInvalidUserID) {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"code":    4003,
+				"message": "invalid user id",
+			})
+			return
+		}
+		if errors.Is(err, service.ErrNoteNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{
+				"code":    4040,
+				"message": "note not found",
+			})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    5008,
+			"message": "unfavorite note failed",
+		})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"code":    0,
+		"message": "ok",
+	})
+}
+
+
+func (h *NoteHandler) ListFavorites(c *gin.Context) {
+	userID, ok := getUserIDFromContext(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"code":    4010,
+			"message": "unauthorized",
+		})
+		return
+	}
+	cursorStr := c.DefaultQuery("cursor", "0")
+	limitStr := c.DefaultQuery("limit", "10")
+	cursor, _ := strconv.ParseInt(cursorStr, 10, 64)
+	limit, _ := strconv.Atoi(limitStr)
+
+	notes, nextCursor, err := h.noteService.ListFavorites(c.Request.Context(), userID, cursor, limit)
+	if err != nil {
+		if errors.Is(err, service.ErrInvalidUserID) {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"code":    4003,
+				"message": "invalid user id",
+			})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    5009,
+			"message": "list favorites failed",
+		})
+		return
+	}
+
+	resp := make([]gin.H, 0, len(notes))
+	for _, note := range notes {
+		resp = append(resp, gin.H{
+			"id":           note.ID,
+			"author_id":    note.AuthorID,
+			"title":        note.Title,
+			"content":      note.Content,
+			"published_at": note.PublishedAt,
+			"created_at":   note.CreatedAt,
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"code":    0,
+		"message": "ok",
+		"data": gin.H{
+			"list":        resp,
+			"next_cursor": nextCursor,
+		},
 	})
 }

@@ -282,6 +282,198 @@ paths:
         "500":
           description: 服务端错误（含游标解析失败等）
 
+  /notes/{id}/like:
+    post:
+      tags: [notes]
+      summary: 点赞笔记
+      description: 需登录；重复点赞不增加计数（唯一约束）。成功时 `code` 为 `0`。
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/NoteId"
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CodeMessageOk"
+        "400":
+          description: 非法笔记 id 或非法用户 id（4002 / 4003）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CodeMessageError"
+        "401":
+          description: 未登录
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CodeMessageError"
+        "404":
+          description: 笔记不存在
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CodeMessageError"
+        "500":
+          description: 点赞失败（code 5005）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CodeMessageError"
+
+  /notes/{id}/unlike:
+    delete:
+      tags: [notes]
+      summary: 取消点赞
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/NoteId"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CodeMessageOk"
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CodeMessageError"
+        "401":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CodeMessageError"
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CodeMessageError"
+        "500":
+          description: code 5006
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CodeMessageError"
+
+  /notes/{id}/favorite:
+    post:
+      tags: [notes]
+      summary: 收藏笔记
+      description: 重复收藏不增加 favorite_count。
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/NoteId"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CodeMessageOk"
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CodeMessageError"
+        "401":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CodeMessageError"
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CodeMessageError"
+        "500":
+          description: code 5007
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CodeMessageError"
+
+  /notes/{id}/unfavorite:
+    delete:
+      tags: [notes]
+      summary: 取消收藏
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/NoteId"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CodeMessageOk"
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CodeMessageError"
+        "401":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CodeMessageError"
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CodeMessageError"
+        "500":
+          description: code 5008
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CodeMessageError"
+
+  /me/favorites:
+    get:
+      tags: [notes]
+      summary: 我的收藏列表
+      description: 游标为 `note_favorites.id`，规则与 `docs/api.md` 2.3 一致。
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: cursor
+          in: query
+          schema:
+            type: integer
+            format: int64
+            default: 0
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 10
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FavoriteListResponse"
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CodeMessageError"
+        "401":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CodeMessageError"
+        "500":
+          description: code 5009
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CodeMessageError"
+
   /users/{id}/follow:
     post:
       tags: [user]
@@ -402,6 +594,24 @@ components:
         format: int64
 
   schemas:
+    CodeMessageOk:
+      type: object
+      properties:
+        code:
+          type: integer
+          example: 0
+        message:
+          type: string
+          example: ok
+
+    CodeMessageError:
+      type: object
+      properties:
+        code:
+          type: integer
+        message:
+          type: string
+
     ErrorMessage:
       type: object
       properties:
@@ -560,6 +770,26 @@ components:
           example: 200
         message:
           type: string
+        data:
+          type: object
+          properties:
+            list:
+              type: array
+              items:
+                $ref: "#/components/schemas/NoteData"
+            next_cursor:
+              type: integer
+              format: int64
+
+    FavoriteListResponse:
+      type: object
+      properties:
+        code:
+          type: integer
+          example: 0
+        message:
+          type: string
+          example: ok
         data:
           type: object
           properties:

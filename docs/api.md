@@ -88,6 +88,13 @@ JWT 特征：
 - `limit` 允许范围 `1~50`，否则后端强制为 `10`
 - `type=following` 时必须携带有效 JWT；`type=foryou` 可不鉴权（可选 Token 仅用于中间件写入用户信息）
 
+#### 我的收藏 `/me/favorites`
+- 使用整型游标 `cursor`（基于 `note_favorites.id`）
+- 查询逻辑：`id < cursor`
+- 排序：`id DESC`
+- `limit` 允许范围 `1~50`，否则后端强制为 `10`
+- 首次请求建议 `cursor=0`；`next_cursor` 为本页最后一条收藏关系记录的 `id`，无更多数据时为 `0`
+
 ## 3. 接口明细
 
 ---
@@ -532,7 +539,182 @@ curl -X DELETE 'http://127.0.0.1:8000/notes/100' \
 
 ---
 
-## 3.9 Feed 流
+## 3.9 点赞笔记
+
+### `POST /notes/:id/like`
+
+说明：为指定笔记点赞；需登录。重复点赞不会报错，也不会重复增加 `like_count`（数据库唯一约束 + `ON DUPLICATE` 忽略写入）。
+
+鉴权：需要 `Bearer Token`
+
+路径参数：`id` 为笔记 ID。
+
+成功响应：`200`
+```json
+{
+  "code": 0,
+  "message": "ok"
+}
+```
+
+失败示例：
+- `400`（非法笔记 id）
+```json
+{
+  "code": 4002,
+  "message": "invalid note id"
+}
+```
+- `401`
+```json
+{
+  "code": 4010,
+  "message": "unauthorized"
+}
+```
+- `400`（用户 id 非法，一般不应出现）
+```json
+{
+  "code": 4003,
+  "message": "invalid user id"
+}
+```
+- `404`
+```json
+{
+  "code": 4040,
+  "message": "note not found"
+}
+```
+- `500`
+```json
+{
+  "code": 5005,
+  "message": "like note failed"
+}
+```
+
+cURL：
+```bash
+curl -X POST 'http://127.0.0.1:8000/notes/100/like' \
+  -H 'Authorization: Bearer <JWT_TOKEN>'
+```
+
+---
+
+## 3.10 取消点赞
+
+### `DELETE /notes/:id/unlike`
+
+说明：取消对指定笔记的点赞。未点赞过再次取消仍为成功（不扣减已为 0 的计数）。
+
+鉴权：需要 `Bearer Token`
+
+成功响应：`200`
+```json
+{
+  "code": 0,
+  "message": "ok"
+}
+```
+
+失败示例：路径非法、未登录、用户 id 非法、笔记不存在、服务错误分别对应 `4002` / `4010` / `4003` / `4040`；服务异常为 `5006`：`unlike note failed`。
+
+cURL：
+```bash
+curl -X DELETE 'http://127.0.0.1:8000/notes/100/unlike' \
+  -H 'Authorization: Bearer <JWT_TOKEN>'
+```
+
+---
+
+## 3.11 收藏笔记
+
+### `POST /notes/:id/favorite`
+
+说明：收藏笔记；需登录。重复收藏不重复增加 `favorite_count`。
+
+鉴权：需要 `Bearer Token`
+
+成功响应：`200`：`{"code":0,"message":"ok"}`
+
+失败示例：与点赞类似，`500` 时为 `5007`：`favorite note failed`。
+
+cURL：
+```bash
+curl -X POST 'http://127.0.0.1:8000/notes/100/favorite' \
+  -H 'Authorization: Bearer <JWT_TOKEN>'
+```
+
+---
+
+## 3.12 取消收藏
+
+### `DELETE /notes/:id/unfavorite`
+
+说明：取消收藏；未收藏过再次取消仍为成功。
+
+鉴权：需要 `Bearer Token`
+
+成功响应：`200`：`{"code":0,"message":"ok"}`
+
+失败示例：服务异常为 `5008`：`unfavorite note failed`。
+
+cURL：
+```bash
+curl -X DELETE 'http://127.0.0.1:8000/notes/100/unfavorite' \
+  -H 'Authorization: Bearer <JWT_TOKEN>'
+```
+
+---
+
+## 3.13 我的收藏列表
+
+### `GET /me/favorites`
+
+说明：分页返回当前用户已收藏的笔记（仅已发布笔记会出现在列表中；若笔记已删除则该条收藏在结果中可能被跳过）。
+
+鉴权：需要 `Bearer Token`
+
+查询参数：
+
+| 参数 | 类型 | 必填 | 默认值 | 说明 |
+|---|---|---|---|---|
+| cursor | int64 | 否 | 0 | 见上文 2.3「我的收藏」 |
+| limit | int | 否 | 10 | 每页条数，建议 1~50 |
+
+成功响应：`200`
+```json
+{
+  "code": 0,
+  "message": "ok",
+  "data": {
+    "list": [
+      {
+        "id": 100,
+        "author_id": 1,
+        "title": "标题",
+        "content": "正文",
+        "published_at": "2026-03-20T10:00:00Z",
+        "created_at": "2026-03-20T10:00:00Z"
+      }
+    ],
+    "next_cursor": 55
+  }
+}
+```
+
+失败示例：`401`（`4010` / `unauthorized`）、`400`（`4003` / `invalid user id`）、`500`（`5009` / `list favorites failed`）。
+
+cURL：
+```bash
+curl -X GET 'http://127.0.0.1:8000/me/favorites?cursor=0&limit=10' \
+  -H 'Authorization: Bearer <JWT_TOKEN>'
+```
+
+---
+
+## 3.14 Feed 流
 
 ### `GET /feed`
 
@@ -625,7 +807,7 @@ curl -X GET 'http://127.0.0.1:8000/feed?type=following&limit=10' \
 
 ---
 
-## 3.10 关注用户
+## 3.15 关注用户
 
 ### `POST /users/:id/follow`
 
@@ -677,7 +859,7 @@ curl -X POST 'http://127.0.0.1:8000/users/2/follow' \
 
 ---
 
-## 3.11 取消关注
+## 3.16 取消关注
 
 ### `DELETE /users/:id/unfollow`
 
@@ -716,7 +898,7 @@ curl -X DELETE 'http://127.0.0.1:8000/users/2/unfollow' \
 
 ---
 
-## 3.12 是否已关注
+## 3.17 是否已关注
 
 ### `POST /users/:id/isfollow`
 
@@ -788,7 +970,13 @@ curl -X GET 'http://127.0.0.1:8000/me' \
 curl -X GET 'http://127.0.0.1:8000/feed?type=foryou&limit=10'
 ```
 
-6) 关注 / 取关 / 是否关注（需替换 ID）
+6) 点赞 / 收藏 / 我的收藏（需替换笔记 ID）
+```bash
+curl -X POST 'http://127.0.0.1:8000/notes/100/like' \
+  -H 'Authorization: Bearer <JWT_TOKEN>'
+```
+
+7) 关注 / 取关 / 是否关注（需替换 ID）
 ```bash
 curl -X POST 'http://127.0.0.1:8000/users/2/follow' \
   -H 'Content-Type: application/json' \
@@ -802,5 +990,6 @@ curl -X POST 'http://127.0.0.1:8000/users/2/follow' \
 - `/notes` 创建接口成功 `code` 为 `200`，而部分接口成功 `code` 为 `0`；`/users/:id/isfollow` 成功时 `code` 为 `200`。
 - `POST/DELETE /users/:id/follow|unfollow|isfollow` 路径中的 `:id` 当前未被 handler 使用，与 body 可不一致；联调时建议三者一致以免混淆。
 - `GET /feed` 在 `type=foryou` 下可不鉴权；`type=following` 必须带 Token。
+- 点赞、收藏相关表与 `notes.like_count` / `favorite_count` 等字段见 `migrations/001_interactions.sql`（部署后接口方可完整工作）。
 
 OpenAPI 3.0 定义见同目录 [`openapi.yaml`](openapi.yaml)。

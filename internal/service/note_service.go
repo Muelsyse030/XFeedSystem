@@ -5,8 +5,8 @@ import (
 	"XFeedSystem/internal/repo"
 	"context"
 	"errors"
-	"time"
 	"gorm.io/gorm"
+	"time"
 )
 
 var (
@@ -35,40 +35,80 @@ func (s *NoteService) Create(userID int64, title, content string) (*model.Note, 
 	}
 	return note, nil
 }
+
 func (s *NoteService) ListByAuthorID(ctx context.Context, authorID, cursor int64, limit int) ([]*model.Note, error) {
 	return s.repo.ListByAuthorID(ctx, authorID, cursor, limit)
 }
+
 func (s *NoteService) GetByID(ctx context.Context, id int64) (*model.Note, error) {
 	return s.repo.GetByID(ctx, id)
 }
+
 func (s *NoteService) Delete(ctx context.Context, id int64, authorID int64) error {
 	return s.repo.DeleteByID(ctx, id, authorID)
 }
+
 func (s *NoteService) Like(ctx context.Context, noteID, userID int64) (bool, error) {
-	if userID <= 0{
-		return false,ErrInvalidUserID
+	if userID <= 0 {
+		return false, ErrInvalidUserID
 	}
 	if _, err := s.repo.GetByID(ctx, noteID); err != nil {
-		if errors.Is(err,gorm.ErrRecordNotFound){
-			return false,ErrNoteNotFound
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return false, ErrNoteNotFound
 		}
-		return false,err
+		return false, err
 	}
-	_,err :=s.repo.Like(ctx , noteID , userID)
+	_, err := s.repo.Like(ctx, noteID, userID)
 
-	return true,err
+	return true, err
 }
 
-func (s *NoteService) Unlike(ctx context.Context , noteID ,userID int64) error {
-	if userID <= 0{
+func (s *NoteService) Unlike(ctx context.Context, noteID, userID int64) error {
+	if userID <= 0 {
 		return ErrInvalidUserID
 	}
-	if _,err := s.repo.GetByID(ctx,noteID); err != nil {
-		if errors.Is(err,gorm.ErrRecordNotFound){
+	if _, err := s.repo.GetByID(ctx, noteID); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ErrNoteNotFound
 		}
 		return err
 	}
-	_,err := s.repo.Unlike(ctx,noteID,userID)
+	_, err := s.repo.Unlike(ctx, noteID, userID)
 	return err
+}
+
+func (s *NoteService) Favorite(ctx context.Context, noteID, userID int64) (bool, error) {
+	if userID <= 0 {
+		return false, ErrInvalidUserID
+	}
+	if _, err := s.repo.GetByID(ctx, noteID); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return false, ErrNoteNotFound
+		}
+		return false, err
+	}
+	_, err := s.repo.Favorite(ctx, noteID, userID)
+	return true, err
+}
+
+func (s *NoteService) Unfavorite(ctx context.Context, noteID, userID int64) error {
+	if userID <= 0 {
+		return ErrInvalidUserID
+	}
+	if _, err := s.repo.GetByID(ctx, noteID); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrNoteNotFound
+		}
+		return err
+	}
+	_, err := s.repo.Unfavorite(ctx, noteID, userID)
+	return err
+}
+
+
+func (s *NoteService) ListFavorites(ctx context.Context, userID, cursor int64, limit int) ([]*model.Note, int64, error) {
+	if userID <= 0 {
+		return nil, 0, ErrInvalidUserID
+	}
+	return s.repo.FavoriteList(ctx, userID, cursor, limit)
 }

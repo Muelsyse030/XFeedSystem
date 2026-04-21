@@ -3,8 +3,8 @@ package repo
 import (
 	"XFeedSystem/internal/model"
 	"context"
-	"gorm.io/gorm/clause"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type NoteRepo interface {
@@ -16,6 +16,11 @@ type NoteRepo interface {
 	Like(ctx context.Context, noteID int64, userID int64) (bool, error)
 	Unlike(ctx context.Context, noteID int64, userID int64) (bool, error)
 	IsLiked(ctx context.Context, noteID int64, userID int64) (bool, error)
+
+	Favorite(ctx context.Context, noteID, userID int64) (bool, error)
+	Unfavorite(ctx context.Context, noteID, userID int64) (bool, error)
+	IsFavorite(ctx context.Context, noteID, userID int64) (bool, error)
+	FavoriteList(ctx context.Context, userID int64, cursor int64, limit int) ([]*model.Note, int64, error)
 }
 type GormNoteRepo struct {
 	db *gorm.DB
@@ -69,40 +74,40 @@ func (r *GormNoteRepo) DeleteByID(ctx context.Context, id int64, authorID int64)
 			"status": model.NoteStatusDeleted,
 		}).Error
 }
-func (r *GormNoteRepo) Like(ctx context.Context,noteID,userID int64) (created bool ,err error) {
+func (r *GormNoteRepo) Like(ctx context.Context, noteID, userID int64) (created bool, err error) {
 	err = r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		like := &model.NoteLike{
-			NoteID : noteID,
-			UserID : userID,
+			NoteID: noteID,
+			UserID: userID,
 		}
 		res := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(like)
-		if res.Error != nil{
+		if res.Error != nil {
 			return res.Error
 		}
-		if res.RowsAffected == 0{
+		if res.RowsAffected == 0 {
 			created = false
 			return nil
 		}
 		created = true
-		return tx.Model(&model.Note{}).Where("id = ?",noteID).Update("like_count",gorm.Expr("like_count + 1")).Error
+		return tx.Model(&model.Note{}).Where("id = ?", noteID).Update("like_count", gorm.Expr("like_count + 1")).Error
 	})
-	return created , err
+	return created, err
 }
 
-func (r *GormNoteRepo) Unlike(ctx context.Context,noteID,userID int64) (deleted bool ,err error) {
+func (r *GormNoteRepo) Unlike(ctx context.Context, noteID, userID int64) (deleted bool, err error) {
 	err = r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		res := tx.Where("note_id = ? AND user_id = ?",noteID,userID).Delete(&model.NoteLike{})
-		if res.Error != nil{
+		res := tx.Where("note_id = ? AND user_id = ?", noteID, userID).Delete(&model.NoteLike{})
+		if res.Error != nil {
 			return res.Error
 		}
-		if res.RowsAffected == 0{
+		if res.RowsAffected == 0 {
 			deleted = false
 			return nil
 		}
 		deleted = true
-		return tx.Model(&model.Note{}).Where("id = ?",noteID).Update("like_count",gorm.Expr("like_count - 1")).Error
+		return tx.Model(&model.Note{}).Where("id = ?", noteID).Update("like_count", gorm.Expr("like_count - 1")).Error
 	})
-	return deleted , err
+	return deleted, err
 }
 
 func (r *GormNoteRepo) IsLiked(ctx context.Context, noteID int64, userID int64) (bool, error) {
@@ -115,4 +120,88 @@ func (r *GormNoteRepo) IsLiked(ctx context.Context, noteID int64, userID int64) 
 		return false, err
 	}
 	return cnt > 0, nil
+}
+
+func (r *GormNoteRepo) Favorite(ctx context.Context, noteID, userID int64) (created bool, err error) {
+	err = r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		favorite := &model.NoteFavorite{
+			NoteID: noteID,
+			UserID: userID,
+		}
+		res := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(favorite)
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			created = false
+			return nil
+		}
+		created = true
+		return tx.Model(&model.Note{}).Where("id = ?", noteID).Update("favorite_count", gorm.Expr("favorite_count + 1")).Error
+	})
+	return created, err
+}
+func (r *GormNoteRepo) Unfavorite(ctx context.Context, noteID, userID int64) (deleted bool, err error) {
+	err = r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		res := tx.Where("note_id = ? AND user_id = ?", noteID, userID).Delete(&model.NoteFavorite{})
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			deleted = false
+			return nil
+		}
+		deleted = true
+		return tx.Model(&model.Note{}).Where("id = ?", noteID).Update("favorite_count", gorm.Expr("favorite_count - 1")).Error
+	})
+	return deleted, err
+}
+func (r *GormNoteRepo) IsFavorite(ctx context.Context, noteID, userID int64) (bool, error) {
+	var cnt int64
+	err := r.db.WithContext(ctx).
+		Model(&model.NoteFavorite{}).
+		Where("note_id = ? AND user_id = ?", noteID, userID).
+		Count(&cnt).Error
+	return cnt > 0, err
+}
+
+
+func (r *GormNoteRepo) FavoriteList(ctx context.Context, userID int64, cursor int64, limit int) ([]*model.Note, int64, error) {
+	if limit <= 0 || limit > 50 {
+		limit = 10
+	}
+	var favs []model.NoteFavorite
+	q := r.db.WithContext(ctx).Where("user_id = ?", userID)
+	if cursor > 0 {
+		q = q.Where("id < ?", cursor)
+	}
+	if err := q.Order("id DESC").Limit(limit).Find(&favs).Error; err != nil {
+		return nil, 0, err
+	}
+	if len(favs) == 0 {
+		return []*model.Note{}, 0, nil
+	}
+	nextCursor := favs[len(favs)-1].ID
+
+	ids := make([]int64, len(favs))
+	for i, f := range favs {
+		ids[i] = f.NoteID
+	}
+	var notes []*model.Note
+	if err := r.db.WithContext(ctx).
+		Where("id IN ? AND status = ?", ids, model.NoteStatusPublished).
+		Find(&notes).Error; err != nil {
+		return nil, 0, err
+	}
+	byID := make(map[int64]*model.Note, len(notes))
+	for _, n := range notes {
+		byID[n.ID] = n
+	}
+	out := make([]*model.Note, 0, len(favs))
+	for _, f := range favs {
+		if n, ok := byID[f.NoteID]; ok {
+			out = append(out, n)
+		}
+	}
+	return out, nextCursor, nil
 }
