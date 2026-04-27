@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -464,6 +465,14 @@ func (h *NoteHandler) Comment(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"code":    4003,
 			"message": "invalid request",
+		})
+		return
+	}
+	req.Content = strings.TrimSpace(req.Content)
+	if req.Content == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    4003,
+			"message": "content required",
 		})
 		return
 	}

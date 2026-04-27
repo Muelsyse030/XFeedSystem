@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"gorm.io/gorm"
+	"strings"
 	"time"
 )
 
@@ -13,6 +14,7 @@ var (
 	ErrInvalidUserID    = errors.New("invalid user id")
 	ErrInvalidNoteID    = errors.New("invalid note id")
 	ErrInvalidCommentID = errors.New("invalid comment id")
+	ErrInvalidComment   = errors.New("invalid comment content")
 	ErrNoteNotFound     = errors.New("note not found")
 	ErrCommentNotFound  = errors.New("comment not found")
 )
@@ -117,6 +119,9 @@ func (s *NoteService) ListFavorites(ctx context.Context, userID, cursor int64, l
 func (s *NoteService) CreateComment(ctx context.Context, userID, noteID int64, content string) (*model.NoteComment, error) {
 	if userID <= 0 {
 		return nil, ErrInvalidUserID
+	}
+	if strings.TrimSpace(content) == "" {
+		return nil, ErrInvalidComment
 	}
 	if _, err := s.repo.GetByID(ctx, noteID); err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
