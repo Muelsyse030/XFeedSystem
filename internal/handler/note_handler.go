@@ -389,7 +389,6 @@ func (h *NoteHandler) Unfavorite(c *gin.Context) {
 	})
 }
 
-
 func (h *NoteHandler) ListFavorites(c *gin.Context) {
 	userID, ok := getUserIDFromContext(c)
 	if !ok {
@@ -438,5 +437,148 @@ func (h *NoteHandler) ListFavorites(c *gin.Context) {
 			"list":        resp,
 			"next_cursor": nextCursor,
 		},
+	})
+}
+func (h *NoteHandler) Comment(c *gin.Context) {
+	idStr := c.Param("id")
+	noteID, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    4002,
+			"message": "invalid note id",
+		})
+		return
+	}
+	userID, ok := getUserIDFromContext(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"code":    4010,
+			"message": "unauthorized",
+		})
+		return
+	}
+	var req struct {
+		Content string `json:"content"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    4003,
+			"message": "invalid request",
+		})
+		return
+	}
+	comment, err := h.noteService.CreateComment(c.Request.Context(), userID, noteID, req.Content)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    5001,
+			"message": "create comment failed",
+		})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"code":    200,
+		"message": "ok",
+		"data": gin.H{
+			"id":      comment.ID,
+			"note_id": comment.NoteID,
+			"user_id": comment.UserID,
+		},
+	})
+}
+func (h *NoteHandler) ListComments(c *gin.Context) {
+	idStr := c.Param("id")
+	noteID, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    4002,
+			"message": "invalid note id",
+		})
+		return
+	}
+
+	cursorStr := c.DefaultQuery("cursor", "0")
+	cursor, err := strconv.ParseInt(cursorStr, 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    4003,
+			"message": "invalid cursor",
+		})
+		return
+	}
+
+	limitStr := c.DefaultQuery("limit", "10")
+	limit, err := strconv.Atoi(limitStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    4004,
+			"message": "invalid limit",
+		})
+		return
+	}
+
+	comments, err := h.noteService.ListCommentsByNoteID(c.Request.Context(), noteID, cursor, limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    5002,
+			"message": "list comments failed",
+		})
+		return
+	}
+
+	nextCursor := int64(0)
+	if len(comments) > 0 {
+		nextCursor = comments[len(comments)-1].ID
+	}
+
+	resp := make([]gin.H, 0, len(comments))
+	for _, cm := range comments {
+		resp = append(resp, gin.H{
+			"id":         cm.ID,
+			"note_id":    cm.NoteID,
+			"user_id":    cm.UserID,
+			"content":    cm.Content,
+			"created_at": cm.CreatedAt,
+		})
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"code":    0,
+		"message": "ok",
+		"data": gin.H{
+			"list":        resp,
+			"next_cursor": nextCursor,
+		},
+	})
+}
+func (h *NoteHandler) DeleteComment(c *gin.Context) {
+	commentIDStr := c.Param("comment_id")
+	commentID, err := strconv.ParseInt(commentIDStr, 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    4002,
+			"message": "invalid comment id",
+		})
+		return
+	}
+	userID, ok := getUserIDFromContext(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"code":    4010,
+			"message": "unauthorized",
+		})
+		return
+	}
+
+	if err := h.noteService.DeleteComment(c.Request.Context(), commentID, userID); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    4005,
+			"message": err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"code":    0,
+		"message": "ok",
 	})
 }

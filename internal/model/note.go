@@ -8,15 +8,18 @@ const (
 )
 
 type Note struct {
-	ID          int64  `gorm:"primaryKey"`
-	AuthorID    int64  `gorm:"not null;index"`
-	Title       string `gorm:"size:255;not null;default:''"`
-	Content     string `gorm:"type:text;not null"`
-	Status      int8   `gorm:"not null;default:1"`
-	Type        int8   `gorm:"not null;default:1"`
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
-	PublishedAt time.Time `gorm:"not null;index"`
+	ID            int64  `gorm:"primaryKey"`
+	AuthorID      int64  `gorm:"not null;index"`
+	Title         string `gorm:"size:255;not null;default:''"`
+	Content       string `gorm:"type:text;not null"`
+	Status        int8   `gorm:"not null;default:1"`
+	Type          int8   `gorm:"not null;default:1"`
+	LikeCount     int64  `gorm:"not null;default:0"`
+	FavoriteCount int64  `gorm:"not null;default:0"`
+	CommentCount  int64  `gorm:"not null;default:0"`
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+	PublishedAt   time.Time `gorm:"not null;index"`
 }
 
 type NoteLike struct {
@@ -32,6 +35,15 @@ type NoteFavorite struct {
 	UserID    int64 `gorm:"not null;index:idx_note_favorites_user_id;uniqueIndex:uk_note_user_favorite,priority:2"`
 	CreatedAt time.Time
 }
+type NoteComment struct {
+	ID        int64  `gorm:"primaryKey"`
+	NoteID    int64  `gorm:"not null;index:idx_note_comments_note_id_id,priority:1"`
+	UserID    int64  `gorm:"not null;index:idx_note_comments_user_id"`
+	Content   string `gorm:"type:text;not null"`
+	Status    int16  `gorm:"not null;default:1"`
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
 
 func (NoteLike) TableName() string {
 	return "note_likes"
@@ -43,4 +55,7 @@ func (NoteFavorite) TableName() string {
 
 func (Note) TableName() string {
 	return "notes"
+}
+func (NoteComment) TableName() string {
+	return "note_comments"
 }

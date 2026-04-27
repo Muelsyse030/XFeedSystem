@@ -10,8 +10,11 @@ import (
 )
 
 var (
-	ErrInvalidUserID = errors.New("invalid user id")
-	ErrNoteNotFound  = errors.New("note not found")
+	ErrInvalidUserID    = errors.New("invalid user id")
+	ErrInvalidNoteID    = errors.New("invalid note id")
+	ErrInvalidCommentID = errors.New("invalid comment id")
+	ErrNoteNotFound     = errors.New("note not found")
+	ErrCommentNotFound  = errors.New("comment not found")
 )
 
 type NoteService struct {
@@ -105,10 +108,48 @@ func (s *NoteService) Unfavorite(ctx context.Context, noteID, userID int64) erro
 	return err
 }
 
-
 func (s *NoteService) ListFavorites(ctx context.Context, userID, cursor int64, limit int) ([]*model.Note, int64, error) {
 	if userID <= 0 {
 		return nil, 0, ErrInvalidUserID
 	}
 	return s.repo.FavoriteList(ctx, userID, cursor, limit)
+}
+func (s *NoteService) CreateComment(ctx context.Context, userID, noteID int64, content string) (*model.NoteComment, error) {
+	if userID <= 0 {
+		return nil, ErrInvalidUserID
+	}
+	if _, err := s.repo.GetByID(ctx, noteID); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNoteNotFound
+		}
+		return nil, err
+	}
+	return s.repo.CreateComment(ctx, userID, noteID, content)
+}
+func (s *NoteService) ListCommentsByNoteID(ctx context.Context, noteID, cursor int64, limit int) ([]*model.NoteComment, error) {
+	if noteID <= 0 {
+		return nil, ErrInvalidNoteID
+	}
+	if limit <= 0 || limit > 50 {
+		limit = 10
+	}
+	return s.repo.ListCommentsByNoteID(ctx, noteID, cursor, limit)
+}
+func (s *NoteService) DeleteComment(ctx context.Context, commentID int64, userID int64) error {
+	if commentID <= 0 {
+		return ErrInvalidCommentID
+	}
+	if _, err := s.repo.GetCommentByID(ctx, commentID); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrCommentNotFound
+		}
+		return err
+	}
+	if err := s.repo.DeleteComment(ctx, commentID, userID); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrCommentNotFound
+		}
+		return err
+	}
+	return nil
 }

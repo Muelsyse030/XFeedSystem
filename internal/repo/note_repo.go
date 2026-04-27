@@ -21,6 +21,11 @@ type NoteRepo interface {
 	Unfavorite(ctx context.Context, noteID, userID int64) (bool, error)
 	IsFavorite(ctx context.Context, noteID, userID int64) (bool, error)
 	FavoriteList(ctx context.Context, userID int64, cursor int64, limit int) ([]*model.Note, int64, error)
+
+	CreateComment(ctx context.Context, userID, noteID int64, content string) (*model.NoteComment, error)
+	GetCommentByID(ctx context.Context, commentID int64) (*model.NoteComment, error)
+	ListCommentsByNoteID(ctx context.Context, noteID, cursor int64, limit int) ([]*model.NoteComment, error)
+	DeleteComment(ctx context.Context, commentID int64, userID int64) error
 }
 type GormNoteRepo struct {
 	db *gorm.DB
@@ -165,7 +170,6 @@ func (r *GormNoteRepo) IsFavorite(ctx context.Context, noteID, userID int64) (bo
 	return cnt > 0, err
 }
 
-
 func (r *GormNoteRepo) FavoriteList(ctx context.Context, userID int64, cursor int64, limit int) ([]*model.Note, int64, error) {
 	if limit <= 0 || limit > 50 {
 		limit = 10
@@ -204,4 +208,53 @@ func (r *GormNoteRepo) FavoriteList(ctx context.Context, userID int64, cursor in
 		}
 	}
 	return out, nextCursor, nil
+}
+func (r *GormNoteRepo) CreateComment(ctx context.Context, userID, noteID int64, content string) (*model.NoteComment, error) {
+	comment := &model.NoteComment{
+		NoteID:  noteID,
+		UserID:  userID,
+		Content: content,
+	}
+	if err := r.db.WithContext(ctx).Create(comment).Error; err != nil {
+		return nil, err
+	}
+	return comment, nil
+}
+func (r *GormNoteRepo) GetCommentByID(ctx context.Context, commentID int64) (*model.NoteComment, error) {
+	var comment model.NoteComment
+	if err := r.db.WithContext(ctx).
+		Model(&model.NoteComment{}).
+		First(&comment, commentID).Error; err != nil {
+		return nil, err
+	}
+	return &comment, nil
+}
+func (r *GormNoteRepo) ListCommentsByNoteID(ctx context.Context, noteID, cursor int64, limit int) ([]*model.NoteComment, error) {
+	if limit <= 0 || limit > 50 {
+		limit = 10
+	}
+	q := r.db.WithContext(ctx).Where("note_id = ? AND status = ?", noteID, model.NoteStatusPublished)
+	if cursor > 0 {
+		q = q.Where("id < ?", cursor)
+	}
+	var comments []*model.NoteComment
+	if err := q.Order("id DESC").Limit(limit).Find(&comments).Error; err != nil {
+		return nil, err
+	}
+	return comments, nil
+}
+func (r *GormNoteRepo) DeleteComment(ctx context.Context, commentID int64, userID int64) error {
+	res := r.db.WithContext(ctx).
+		Model(&model.NoteComment{}).
+		Where("id = ? AND user_id = ? AND status = ?", commentID, userID, model.NoteStatusPublished).
+		Updates(map[string]interface{}{
+			"status": model.NoteStatusDeleted,
+		})
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
 }
