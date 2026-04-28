@@ -1,7 +1,9 @@
 package handler
 
 import (
+	"XFeedSystem/internal/model"
 	"XFeedSystem/internal/service"
+	"context"
 	"errors"
 	"net/http"
 	"strconv"
@@ -459,7 +461,9 @@ func (h *NoteHandler) Comment(c *gin.Context) {
 		return
 	}
 	var req struct {
-		Content string `json:"content"`
+		Content       string `json:"content"`
+		ParentID      int64  `json:"parent_id"`
+		ReplyToUserID int64  `json:"reply_to_user_id"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
@@ -469,15 +473,22 @@ func (h *NoteHandler) Comment(c *gin.Context) {
 		return
 	}
 	req.Content = strings.TrimSpace(req.Content)
-	if req.Content == "" {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":    4003,
-			"message": "content required",
-		})
-		return
-	}
-	comment, err := h.noteService.CreateComment(c.Request.Context(), userID, noteID, req.Content)
+	comment, err := h.noteService.CreateReply(c.Request.Context(), userID, noteID, req.ParentID, req.ReplyToUserID, req.Content)
 	if err != nil {
+		if errors.Is(err, service.ErrInvalidComment) || errors.Is(err, service.ErrInvalidCommentID) || errors.Is(err, service.ErrInvalidNoteID) {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"code":    4003,
+				"message": err.Error(),
+			})
+			return
+		}
+		if errors.Is(err, service.ErrNoteNotFound) || errors.Is(err, service.ErrCommentNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{
+				"code":    4040,
+				"message": err.Error(),
+			})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"code":    5001,
 			"message": "create comment failed",
@@ -487,11 +498,7 @@ func (h *NoteHandler) Comment(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"code":    200,
 		"message": "ok",
-		"data": gin.H{
-			"id":      comment.ID,
-			"note_id": comment.NoteID,
-			"user_id": comment.UserID,
-		},
+		"data": h.buildCommentItem(c.Request.Context(), comment, noteID),
 	})
 }
 func (h *NoteHandler) ListComments(c *gin.Context) {
@@ -541,12 +548,33 @@ func (h *NoteHandler) ListComments(c *gin.Context) {
 
 	resp := make([]gin.H, 0, len(comments))
 	for _, cm := range comments {
+		replies, err := h.noteService.ListRepliesByParentID(c.Request.Context(), noteID, cm.ID, 50)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"code":    5002,
+				"message": "list replies failed",
+			})
+			return
+		}
+		replyResp := make([]gin.H, 0, len(replies))
+		for _, rp := range replies {
+			replyResp = append(replyResp, gin.H{
+				"id":               rp.ID,
+				"note_id":          rp.NoteID,
+				"user_id":          rp.UserID,
+				"parent_id":        rp.ParentID,
+				"reply_to_user_id": rp.ReplyToUserID,
+				"content":          rp.Content,
+				"created_at":       rp.CreatedAt,
+			})
+		}
 		resp = append(resp, gin.H{
 			"id":         cm.ID,
 			"note_id":    cm.NoteID,
 			"user_id":    cm.UserID,
 			"content":    cm.Content,
 			"created_at": cm.CreatedAt,
+			"replies":    replyResp,
 		})
 	}
 
@@ -590,4 +618,36 @@ func (h *NoteHandler) DeleteComment(c *gin.Context) {
 		"code":    0,
 		"message": "ok",
 	})
+}
+
+func (h *NoteHandler) buildCommentItem(ctx context.Context, cm *model.NoteComment, noteID int64) gin.H {
+	item := gin.H{
+		"id":               cm.ID,
+		"note_id":          cm.NoteID,
+		"user_id":          cm.UserID,
+		"parent_id":        cm.ParentID,
+		"reply_to_user_id": cm.ReplyToUserID,
+		"content":          cm.Content,
+		"created_at":       cm.CreatedAt,
+		"replies":          []gin.H{},
+	}
+	if cm.ParentID == 0 {
+		replies, err := h.noteService.ListRepliesByParentID(ctx, noteID, cm.ID, 50)
+		if err == nil {
+			replyResp := make([]gin.H, 0, len(replies))
+			for _, rp := range replies {
+				replyResp = append(replyResp, gin.H{
+					"id":               rp.ID,
+					"note_id":          rp.NoteID,
+					"user_id":          rp.UserID,
+					"parent_id":        rp.ParentID,
+					"reply_to_user_id": rp.ReplyToUserID,
+					"content":          rp.Content,
+					"created_at":       rp.CreatedAt,
+				})
+			}
+			item["replies"] = replyResp
+		}
+	}
+	return item
 }

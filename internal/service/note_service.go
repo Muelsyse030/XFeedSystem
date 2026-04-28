@@ -117,8 +117,15 @@ func (s *NoteService) ListFavorites(ctx context.Context, userID, cursor int64, l
 	return s.repo.FavoriteList(ctx, userID, cursor, limit)
 }
 func (s *NoteService) CreateComment(ctx context.Context, userID, noteID int64, content string) (*model.NoteComment, error) {
+	return s.CreateReply(ctx, userID, noteID, 0, 0, content)
+}
+
+func (s *NoteService) CreateReply(ctx context.Context, userID, noteID, parentID, replyToUserID int64, content string) (*model.NoteComment, error) {
 	if userID <= 0 {
 		return nil, ErrInvalidUserID
+	}
+	if noteID <= 0 {
+		return nil, ErrInvalidNoteID
 	}
 	if strings.TrimSpace(content) == "" {
 		return nil, ErrInvalidComment
@@ -129,8 +136,24 @@ func (s *NoteService) CreateComment(ctx context.Context, userID, noteID int64, c
 		}
 		return nil, err
 	}
-	return s.repo.CreateComment(ctx, userID, noteID, content)
+	if parentID > 0 {
+		parent, err := s.repo.GetCommentByID(ctx, parentID)
+		if err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil, ErrCommentNotFound
+			}
+			return nil, err
+		}
+		if parent.NoteID != noteID {
+			return nil, ErrInvalidCommentID
+		}
+		if replyToUserID <= 0 {
+			replyToUserID = parent.UserID
+		}
+	}
+	return s.repo.CreateComment(ctx, userID, noteID, parentID, replyToUserID, content)
 }
+
 func (s *NoteService) ListCommentsByNoteID(ctx context.Context, noteID, cursor int64, limit int) ([]*model.NoteComment, error) {
 	if noteID <= 0 {
 		return nil, ErrInvalidNoteID
@@ -139,6 +162,19 @@ func (s *NoteService) ListCommentsByNoteID(ctx context.Context, noteID, cursor i
 		limit = 10
 	}
 	return s.repo.ListCommentsByNoteID(ctx, noteID, cursor, limit)
+}
+
+func (s *NoteService) ListRepliesByParentID(ctx context.Context, noteID, parentID int64, limit int) ([]*model.NoteComment, error) {
+	if noteID <= 0 {
+		return nil, ErrInvalidNoteID
+	}
+	if parentID <= 0 {
+		return nil, ErrInvalidCommentID
+	}
+	if limit <= 0 || limit > 50 {
+		limit = 10
+	}
+	return s.repo.ListRepliesByParentID(ctx, noteID, parentID, limit)
 }
 func (s *NoteService) DeleteComment(ctx context.Context, commentID int64, userID int64) error {
 	if commentID <= 0 {

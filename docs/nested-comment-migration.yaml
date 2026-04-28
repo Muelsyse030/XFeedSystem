@@ -1,0 +1,54 @@
+migration:
+  name: nested-comment-support
+  tables:
+    note_comments:
+      added_columns:
+        - parent_id
+        - reply_to_user_id
+      indexes:
+        - idx_note_comments_parent_id
+        - idx_note_comments_reply_to_user_id
+      semantics:
+        parent_id: 0 means top-level comment
+        reply_to_user_id: replied-to user id, auto-filled by backend when omitted
+  api:
+    endpoints:
+      - method: POST
+        path: /notes/{id}/comments
+        request_body:
+          content:
+            type: string
+            required: true
+          parent_id:
+            type: integer
+            required: false
+          reply_to_user_id:
+            type: integer
+            required: false
+        response_shape:
+          code: 200
+          data:
+            - id
+            - note_id
+            - user_id
+            - parent_id
+            - reply_to_user_id
+            - content
+            - created_at
+            - replies
+      - method: GET
+        path: /notes/{id}/comments
+        response_shape:
+          code: 0
+          data:
+            list:
+              item:
+                - id
+                - note_id
+                - user_id
+                - parent_id
+                - reply_to_user_id
+                - content
+                - created_at
+                - replies
+            next_cursor: int64

@@ -95,6 +95,13 @@ JWT 特征：
 - `limit` 允许范围 `1~50`，否则后端强制为 `10`
 - 首次请求建议 `cursor=0`；`next_cursor` 为本页最后一条收藏关系记录的 `id`，无更多数据时为 `0`
 
+#### 评论列表 `/notes/:id/comments`
+- 使用整型游标 `cursor`（本质是 `note_comments.id`）
+- 查询逻辑：`id < cursor`
+- 排序：`id DESC`
+- `limit` 允许范围 `1~50`，否则后端强制为 `10`
+- 首次请求建议 `cursor=0`；`next_cursor` 为本页最后一条评论记录的 `id`，无更多数据时为 `0`
+
 ## 3. 接口明细
 
 ---
@@ -714,7 +721,225 @@ curl -X GET 'http://127.0.0.1:8000/me/favorites?cursor=0&limit=10' \
 
 ---
 
-## 3.14 Feed 流
+## 3.14 评论
+
+### `POST /notes/:id/comments`
+
+说明：对指定笔记发表评论或回复评论；需登录。请求体仅支持 JSON（`Content-Type: application/json`）。
+
+鉴权：需要 `Bearer Token`
+
+路径参数：
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| id | int64 | 是 | 笔记 ID |
+
+请求体：
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| content | string | 是 | 评论内容（去除首尾空白后不能为空） |
+| parent_id | int64 | 否 | 父评论 ID；为空或 0 表示一级评论 |
+| reply_to_user_id | int64 | 否 | 回复对象用户 ID；通常由后端自动补齐 |
+
+请求示例：
+```json
+{
+  "content": "这是一条评论"
+}
+```
+
+成功响应：`200`
+```json
+{
+  "code": 200,
+  "message": "ok",
+  "data": {
+    "id": 2,
+    "note_id": 3,
+    "user_id": 3,
+    "parent_id": 0,
+    "reply_to_user_id": 0,
+    "content": "这是一条评论",
+    "created_at": "2026-04-27T08:39:38+08:00",
+    "replies": []
+  }
+}
+```
+
+失败示例：
+- `400`（非法笔记 id）
+```json
+{
+  "code": 4002,
+  "message": "invalid note id"
+}
+```
+- `400`（请求体非法或 content 为空）
+```json
+{
+  "code": 4003,
+  "message": "content required"
+}
+```
+- `401`
+```json
+{
+  "code": 4010,
+  "message": "unauthorized"
+}
+```
+- `500`
+```json
+{
+  "code": 5001,
+  "message": "create comment failed"
+}
+```
+
+cURL：
+```bash
+curl -X POST 'http://127.0.0.1:8000/notes/3/comments' \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer <JWT_TOKEN>' \
+  -d '{"content":"这是一条评论"}'
+```
+
+---
+
+### `GET /notes/:id/comments`
+
+说明：获取指定笔记的评论列表（倒序分页）。一级评论会内嵌 `replies` 子回复数组，便于前端直接渲染楼中楼。
+
+鉴权：需要 `Bearer Token`
+
+路径参数：`id` 为笔记 ID。
+
+查询参数：
+
+| 参数 | 类型 | 必填 | 默认值 | 说明 |
+|---|---|---|---|---|
+| cursor | int64 | 否 | 0 | 游标，返回 `id < cursor` 的记录 |
+| limit | int | 否 | 10 | 每页条数，建议 1~50 |
+
+成功响应：`200`
+```json
+{
+  "code": 0,
+  "message": "ok",
+  "data": {
+    "list": [
+      {
+        "id": 2,
+        "note_id": 3,
+        "user_id": 3,
+        "parent_id": 0,
+        "reply_to_user_id": 0,
+        "content": "这是一条评论",
+        "created_at": "2026-04-27T08:39:38+08:00",
+        "replies": [
+          {
+            "id": 3,
+            "note_id": 3,
+            "user_id": 4,
+            "parent_id": 2,
+            "reply_to_user_id": 3,
+            "content": "这是回复",
+            "created_at": "2026-04-27T08:40:10+08:00"
+          }
+        ]
+      }
+    ],
+    "next_cursor": 2
+  }
+}
+```
+
+失败示例：
+- `400`（非法参数）
+```json
+{
+  "code": 4004,
+  "message": "invalid limit"
+}
+```
+- `401`
+```json
+{
+  "code": 4010,
+  "message": "unauthorized"
+}
+```
+- `500`
+```json
+{
+  "code": 5002,
+  "message": "list comments failed"
+}
+```
+
+cURL：
+```bash
+curl -X GET 'http://127.0.0.1:8000/notes/3/comments?cursor=0&limit=10' \
+  -H 'Authorization: Bearer <JWT_TOKEN>'
+```
+
+---
+
+### `DELETE /notes/:id/comments/:comment_id`
+
+说明：删除自己发布的评论（逻辑删除）。需登录。
+
+鉴权：需要 `Bearer Token`
+
+路径参数：
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| id | int64 | 是 | 笔记 ID（当前实现不使用该参数，仅用于路由匹配） |
+| comment_id | int64 | 是 | 评论 ID |
+
+成功响应：`200`
+```json
+{
+  "code": 0,
+  "message": "ok"
+}
+```
+
+失败示例：
+- `400`（非法评论 id）
+```json
+{
+  "code": 4002,
+  "message": "invalid comment id"
+}
+```
+- `400`（业务错误，例如评论不存在/非本人）
+```json
+{
+  "code": 4005,
+  "message": "<error>"
+}
+```
+- `401`
+```json
+{
+  "code": 4010,
+  "message": "unauthorized"
+}
+```
+
+cURL：
+```bash
+curl -X DELETE 'http://127.0.0.1:8000/notes/3/comments/2' \
+  -H 'Authorization: Bearer <JWT_TOKEN>'
+```
+
+---
+
+## 3.15 Feed 流
 
 ### `GET /feed`
 
@@ -807,7 +1032,7 @@ curl -X GET 'http://127.0.0.1:8000/feed?type=following&limit=10' \
 
 ---
 
-## 3.15 关注用户
+## 3.16 关注用户
 
 ### `POST /users/:id/follow`
 
@@ -859,7 +1084,7 @@ curl -X POST 'http://127.0.0.1:8000/users/2/follow' \
 
 ---
 
-## 3.16 取消关注
+## 3.17 取消关注
 
 ### `DELETE /users/:id/unfollow`
 
@@ -898,7 +1123,7 @@ curl -X DELETE 'http://127.0.0.1:8000/users/2/unfollow' \
 
 ---
 
-## 3.17 是否已关注
+## 3.18 是否已关注
 
 ### `POST /users/:id/isfollow`
 
@@ -976,7 +1201,25 @@ curl -X POST 'http://127.0.0.1:8000/notes/100/like' \
   -H 'Authorization: Bearer <JWT_TOKEN>'
 ```
 
-7) 关注 / 取关 / 是否关注（需替换 ID）
+7) 评论 / 拉评论 / 删评论（需替换笔记 ID / 评论 ID）
+```bash
+curl -X POST 'http://127.0.0.1:8000/notes/100/comments' \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer <JWT_TOKEN>' \
+  -d '{"content":"第一条评论"}'
+```
+
+```bash
+curl -X GET 'http://127.0.0.1:8000/notes/100/comments?cursor=0&limit=10' \
+  -H 'Authorization: Bearer <JWT_TOKEN>'
+```
+
+```bash
+curl -X DELETE 'http://127.0.0.1:8000/notes/100/comments/2' \
+  -H 'Authorization: Bearer <JWT_TOKEN>'
+```
+
+8) 关注 / 取关 / 是否关注（需替换 ID）
 ```bash
 curl -X POST 'http://127.0.0.1:8000/users/2/follow' \
   -H 'Content-Type: application/json' \

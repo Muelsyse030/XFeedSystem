@@ -478,7 +478,7 @@ paths:
     post:
       tags: [notes]
       summary: 评论笔记
-      description: 需登录；成功时 `code` 为 `200`。
+      description: 需登录；支持楼中楼回复；成功时 `code` 为 `200`。
       security:
         - bearerAuth: []
       parameters:
@@ -519,6 +519,7 @@ paths:
       summary: 评论列表（游标分页）
       description: |
         需登录；游标为 `note_comments.id`（降序分页）。
+        一级评论会内嵌 `replies` 子回复数组，便于前端直接渲染楼中楼。
         成功时 `code` 为 `0`。
       security:
         - bearerAuth: []
@@ -810,28 +811,14 @@ components:
         content:
           type: string
           minLength: 1
-
-    CreateCommentResponse:
-      type: object
-      properties:
-        code:
+        parent_id:
           type: integer
-          example: 200
-        message:
-          type: string
-          example: ok
-        data:
-          type: object
-          properties:
-            id:
-              type: integer
-              format: int64
-            note_id:
-              type: integer
-              format: int64
-            user_id:
-              type: integer
-              format: int64
+          format: int64
+          description: 父评论 ID；0 或不传表示一级评论
+        reply_to_user_id:
+          type: integer
+          format: int64
+          description: 回复对象用户 ID；可由后端自动补齐
 
     CommentItem:
       type: object
@@ -845,11 +832,33 @@ components:
         user_id:
           type: integer
           format: int64
+        parent_id:
+          type: integer
+          format: int64
+        reply_to_user_id:
+          type: integer
+          format: int64
         content:
           type: string
         created_at:
           type: string
           format: date-time
+        replies:
+          type: array
+          items:
+            $ref: "#/components/schemas/CommentItem"
+
+    CreateCommentResponse:
+      type: object
+      properties:
+        code:
+          type: integer
+          example: 200
+        message:
+          type: string
+          example: ok
+        data:
+          $ref: "#/components/schemas/CommentItem"
 
     CommentListResponse:
       type: object

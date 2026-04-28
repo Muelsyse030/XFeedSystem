@@ -22,9 +22,10 @@ type NoteRepo interface {
 	IsFavorite(ctx context.Context, noteID, userID int64) (bool, error)
 	FavoriteList(ctx context.Context, userID int64, cursor int64, limit int) ([]*model.Note, int64, error)
 
-	CreateComment(ctx context.Context, userID, noteID int64, content string) (*model.NoteComment, error)
+	CreateComment(ctx context.Context, userID, noteID, parentID, replyToUserID int64, content string) (*model.NoteComment, error)
 	GetCommentByID(ctx context.Context, commentID int64) (*model.NoteComment, error)
 	ListCommentsByNoteID(ctx context.Context, noteID, cursor int64, limit int) ([]*model.NoteComment, error)
+	ListRepliesByParentID(ctx context.Context, noteID, parentID int64, limit int) ([]*model.NoteComment, error)
 	DeleteComment(ctx context.Context, commentID int64, userID int64) error
 }
 type GormNoteRepo struct {
@@ -209,11 +210,13 @@ func (r *GormNoteRepo) FavoriteList(ctx context.Context, userID int64, cursor in
 	}
 	return out, nextCursor, nil
 }
-func (r *GormNoteRepo) CreateComment(ctx context.Context, userID, noteID int64, content string) (*model.NoteComment, error) {
+func (r *GormNoteRepo) CreateComment(ctx context.Context, userID, noteID, parentID, replyToUserID int64, content string) (*model.NoteComment, error) {
 	comment := &model.NoteComment{
-		NoteID:  noteID,
-		UserID:  userID,
-		Content: content,
+		NoteID:        noteID,
+		UserID:        userID,
+		ParentID:      parentID,
+		ReplyToUserID: replyToUserID,
+		Content:       content,
 	}
 	if err := r.db.WithContext(ctx).Create(comment).Error; err != nil {
 		return nil, err
@@ -233,7 +236,7 @@ func (r *GormNoteRepo) ListCommentsByNoteID(ctx context.Context, noteID, cursor 
 	if limit <= 0 || limit > 50 {
 		limit = 10
 	}
-	q := r.db.WithContext(ctx).Where("note_id = ? AND status = ?", noteID, model.NoteStatusPublished)
+	q := r.db.WithContext(ctx).Where("note_id = ? AND parent_id = 0 AND status = ?", noteID, model.NoteStatusPublished)
 	if cursor > 0 {
 		q = q.Where("id < ?", cursor)
 	}
@@ -242,6 +245,21 @@ func (r *GormNoteRepo) ListCommentsByNoteID(ctx context.Context, noteID, cursor 
 		return nil, err
 	}
 	return comments, nil
+}
+
+func (r *GormNoteRepo) ListRepliesByParentID(ctx context.Context, noteID, parentID int64, limit int) ([]*model.NoteComment, error) {
+	if limit <= 0 || limit > 50 {
+		limit = 10
+	}
+	var replies []*model.NoteComment
+	if err := r.db.WithContext(ctx).
+		Where("note_id = ? AND parent_id = ? AND status = ?", noteID, parentID, model.NoteStatusPublished).
+		Order("id ASC").
+		Limit(limit).
+		Find(&replies).Error; err != nil {
+		return nil, err
+	}
+	return replies, nil
 }
 func (r *GormNoteRepo) DeleteComment(ctx context.Context, commentID int64, userID int64) error {
 	res := r.db.WithContext(ctx).

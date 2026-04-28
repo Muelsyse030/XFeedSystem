@@ -36,13 +36,15 @@ type NoteFavorite struct {
 	CreatedAt time.Time
 }
 type NoteComment struct {
-	ID        int64  `gorm:"primaryKey"`
-	NoteID    int64  `gorm:"not null;index:idx_note_comments_note_id_id,priority:1"`
-	UserID    int64  `gorm:"not null;index:idx_note_comments_user_id"`
-	Content   string `gorm:"type:text;not null"`
-	Status    int16  `gorm:"not null;default:1"`
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID            int64  `gorm:"primaryKey"`
+	NoteID        int64  `gorm:"not null;index:idx_note_comments_note_id_id,priority:1"`
+	UserID        int64  `gorm:"not null;index:idx_note_comments_user_id"`
+	ParentID      int64  `gorm:"not null;default:0;index:idx_note_comments_parent_id"`
+	ReplyToUserID int64  `gorm:"not null;default:0;index:idx_note_comments_reply_to_user_id"`
+	Content       string `gorm:"type:text;not null"`
+	Status        int16  `gorm:"not null;default:1"`
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
 }
 
 func (NoteLike) TableName() string {
