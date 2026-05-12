@@ -12,7 +12,7 @@ type NoteRepo interface {
 	GetByID(ctx context.Context, id int64) (*model.Note, error)
 	DeleteByID(ctx context.Context, id int64, authorID int64) error
 	ListByAuthorID(ctx context.Context, authorID int64, cursor int64, limit int) ([]*model.Note, error)
-
+	UpdataByAuthorID(ctx context.Context, noteID, authorID int64, title, content string) error
 	Like(ctx context.Context, noteID int64, userID int64) (bool, error)
 	Unlike(ctx context.Context, noteID int64, userID int64) (bool, error)
 	IsLiked(ctx context.Context, noteID int64, userID int64) (bool, error)
@@ -267,6 +267,23 @@ func (r *GormNoteRepo) DeleteComment(ctx context.Context, commentID int64, userI
 		Where("id = ? AND user_id = ? AND status = ?", commentID, userID, model.NoteStatusPublished).
 		Updates(map[string]interface{}{
 			"status": model.NoteStatusDeleted,
+		})
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
+}
+
+func (r *GormNoteRepo) UpdataByAuthorID(ctx context.Context, noteID, authorID int64, title, content string) error {
+	res := r.db.WithContext(ctx).
+		Model(&model.Note{}).
+		Where("id = ? AND author_id = ? AND status = ?", noteID, authorID, model.NoteStatusPublished).
+		Updates(map[string]interface{}{
+			"title":   title,
+			"content": content,
 		})
 	if res.Error != nil {
 		return res.Error

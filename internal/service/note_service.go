@@ -17,6 +17,7 @@ var (
 	ErrInvalidComment   = errors.New("invalid comment content")
 	ErrNoteNotFound     = errors.New("note not found")
 	ErrCommentNotFound  = errors.New("comment not found")
+	ErrEmptyNoteContent = errors.New("title and content must not be empty")
 )
 
 type NoteService struct {
@@ -193,4 +194,17 @@ func (s *NoteService) DeleteComment(ctx context.Context, commentID int64, userID
 		return err
 	}
 	return nil
+}
+
+func (s *NoteService) Updata(ctx context.Context, noteID, authorID int64, title, content string) error {
+	if noteID <= 0 {
+		return ErrInvalidNoteID
+	}
+	if authorID <= 0 {
+		return ErrInvalidUserID
+	}
+	if strings.TrimSpace(title) == "" || strings.TrimSpace(content) == "" {
+		return ErrEmptyNoteContent
+	}
+	return s.repo.UpdataByAuthorID(ctx, noteID, authorID, title, content)
 }

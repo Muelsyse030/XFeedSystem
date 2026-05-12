@@ -94,6 +94,10 @@ func (h *UserHandler) Me(c *gin.Context) {
 		"data": gin.H{
 			"id":       user.ID,
 			"username": user.Username,
+			"avatar_url": user.AvatarURL,
+			"bio": user.Bio,
+			"created_at": user.CreatedAt,
+			"updated_at": user.UpdatedAt,
 		},
 	})
 }

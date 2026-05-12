@@ -41,6 +41,7 @@ func SetupRouter(db *gorm.DB) *gin.Engine {
 		auth.GET("/me", userHandler.Me)
 		auth.POST("/notes", noteHandler.Create)
 		auth.DELETE("/notes/:id", noteHandler.Delete)
+		auth.PATCH("/notes/updata/:id", noteHandler.Updata)
 
 		auth.POST("/notes/:id/like", noteHandler.Like)
 		auth.DELETE("/notes/:id/unlike", noteHandler.Unlike)

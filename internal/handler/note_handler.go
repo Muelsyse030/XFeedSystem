@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 type NoteHandler struct {
@@ -156,6 +157,9 @@ func (h *NoteHandler) Detail(c *gin.Context) {
 			"content":      note.Content,
 			"published_at": note.PublishedAt,
 			"created_at":   note.CreatedAt,
+			"like_count": note.LikeCount,
+			"favorite_count": note.FavoriteCount,
+			"comment_count": note.CommentCount,
 		},
 	})
 }
@@ -650,4 +654,66 @@ func (h *NoteHandler) buildCommentItem(ctx context.Context, cm *model.NoteCommen
 		}
 	}
 	return item
+}
+
+func (h *NoteHandler) Updata(c *gin.Context) {
+	idStr := c.Param("id")
+	noteID, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil || noteID <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    4002,
+			"message": "invalid note id",
+		})
+		return
+	}
+	var req CreateNoteRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    4001,
+			"message": err.Error(),
+		})
+		return
+	}
+	uidValue, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"code":    4010,
+			"message": "unauthorized",
+		})
+		return
+	}
+	userID, ok := uidValue.(int64)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"code":    4012,
+			"message": "invalid user id type",
+		})
+		return
+	}
+	err = h.noteService.Updata(c.Request.Context(), noteID, userID, req.Title, req.Content)
+	if err != nil {
+		if errors.Is(err, service.ErrEmptyNoteContent) {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"code":    4003,
+				"message": err.Error(),
+			})
+			return
+		}
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{
+				"code":    4040,
+				"message": "note not found or not editable",
+			})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    5001,
+			"message": err.Error(),
+		})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"code":    0,
+		"message": "ok",
+	})
 }
