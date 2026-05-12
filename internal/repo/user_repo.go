@@ -19,6 +19,7 @@ type UserRepo interface {
 	Delete(ctx context.Context, userID, followID int64) error
 	Exists(ctx context.Context, userID, followID int64) (bool, error)
 	GetFollowingIDs(ctx context.Context, userID int64) ([]int64, error)
+	Updata(ctx context.Context,userID int64,avatarURL string,bio string) error
 }
 type GormUserRepo struct {
 	db *gorm.DB
@@ -97,4 +98,20 @@ func (r *GormUserRepo) GetFollowingIDs(ctx context.Context, userID int64) ([]int
 		return nil, err
 	}
 	return ids, nil
+}
+func (r *GormUserRepo) Updata(ctx context.Context,userID int64,avatarURL string,bio string) error {
+	res := r.db.WithContext(ctx).
+		Model(&model.User{}).
+		Where("id = ?", userID).
+		Updates(map[string]interface{}{
+			"avatar_url": avatarURL,
+			"bio": bio,
+		})
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
 }

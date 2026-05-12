@@ -39,6 +39,7 @@ func SetupRouter(db *gorm.DB) *gin.Engine {
 	auth.Use(middleware.JWTAuth())
 	{
 		auth.GET("/me", userHandler.Me)
+		auth.PATCH("/me/updata", userHandler.Updata)
 		auth.POST("/notes", noteHandler.Create)
 		auth.DELETE("/notes/:id", noteHandler.Delete)
 		auth.PATCH("/notes/updata/:id", noteHandler.Updata)

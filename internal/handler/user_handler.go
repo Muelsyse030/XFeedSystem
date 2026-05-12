@@ -24,6 +24,10 @@ type FollowRequesst struct {
 	User_id   int64 `json:"user_id"`
 	Follow_id int64 `json:"follow_id"`
 }
+type UpdataUserRequest struct {
+	AvatarURL string `json:"avatar_url"`
+	Bio       string `json:"bio"`
+}
 
 func NewUserHandler(userService *service.UserService) *UserHandler {
 	return &UserHandler{
@@ -163,3 +167,42 @@ func (h *UserHandler) Isfollow(c *gin.Context) {
 		"follow":  isfollow,
 	})
 }
+ func (h *UserHandler) Updata(c *gin.Context){
+	var req UpdataUserRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    4001,
+			"message": err.Error(),
+		})
+		return
+	}
+	uidValue, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"code":    4010,
+			"message": "unauthorized",
+		})
+		return
+	}
+	userID, ok := uidValue.(int64)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"code":    4012,
+			"message": "invalid user id type",
+		})
+		return
+	}
+	err := h.userService.Updata(c.Request.Context(),userID,req.AvatarURL,req.Bio)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    5001,
+			"message": err.Error(),
+		})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"code":    0,
+		"message": "ok",
+	})
+	return
+ }

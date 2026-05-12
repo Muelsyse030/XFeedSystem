@@ -94,3 +94,12 @@ func (s *UserService) Isfollow(ctx context.Context, userID, followID int64) (boo
 	}
 	return isfollow, nil
 }
+func (s *UserService) Updata(ctx context.Context,userID int64,avatarURL string,bio string) error {
+	if userID <= 0 {
+		return errors.New("用户ID不能为空")
+	}
+	if avatarURL == "" && bio == "" {
+		return errors.New("头像和简介不能同时为空")
+	}
+	return s.repo.Updata(ctx,userID,avatarURL,bio)
+}
