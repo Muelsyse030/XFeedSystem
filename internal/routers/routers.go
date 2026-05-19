@@ -1,8 +1,10 @@
 package routers
 
 import (
+	"XFeedSystem/internal/cache"
 	"XFeedSystem/internal/handler"
 	"XFeedSystem/internal/middleware"
+	"XFeedSystem/internal/pkg/config"
 	"XFeedSystem/internal/repo"
 	"XFeedSystem/internal/service"
 
@@ -10,17 +12,18 @@ import (
 	"gorm.io/gorm"
 )
 
-func SetupRouter(db *gorm.DB) *gin.Engine {
+func SetupRouter(db *gorm.DB, redisCfg config.Config) *gin.Engine {
 
 	r := gin.Default()
+	redisCache := cache.NewRedisCache(redisCfg.Redis.Addr, redisCfg.Redis.Password, redisCfg.Redis.DB)
 	userRepo := repo.NewGormUserRepo(db)
-	userService := service.NewUserService(userRepo)
+	userService := service.NewUserService(userRepo,redisCache)
 	userHandler := handler.NewUserHandler(userService)
 	noteRepo := repo.NewGormNoteRepo(db)
 	noteService := service.NewNoteService(noteRepo)
 	noteHandler := handler.NewNoteHandler(noteService)
 	feedRepo := repo.NewGormFeedRepo(db)
-	feedService := service.NewFeedService(feedRepo, userRepo)
+	feedService := service.NewFeedService(feedRepo, userRepo,redisCache)
 	feedHandler := handler.NewFeedHandler(feedService)
 
 	r.GET("/ping", func(c *gin.Context) {
@@ -35,6 +38,7 @@ func SetupRouter(db *gorm.DB) *gin.Engine {
 	r.GET("/notes/:id", noteHandler.Detail)
 	r.GET("/users/:id/notes", noteHandler.ListByUser)
 	r.GET("/feed", middleware.OptionalJWTAuth(), feedHandler.List)
+	r.GET("/users/:id", userHandler.GetProfile)
 	auth := r.Group("/")
 	auth.Use(middleware.JWTAuth())
 	{

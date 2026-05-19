@@ -3,7 +3,9 @@ package handler
 import (
 	"XFeedSystem/internal/middleware"
 	"XFeedSystem/internal/service"
+	"errors"
 	"net/http"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 )
@@ -105,6 +107,46 @@ func (h *UserHandler) Me(c *gin.Context) {
 		},
 	})
 }
+
+func (h *UserHandler) GetProfile(c *gin.Context) {
+	idStr := c.Param("id")
+	uid, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil || uid <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    4003,
+			"message": "invalid user id",
+		})
+		return
+	}
+	user, err := h.userService.GetProfile(uid)
+	if err != nil {
+		if errors.Is(err, service.ErrUserNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{
+				"code":    4040,
+				"message": "user not found",
+			})
+			return
+		}
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    4004,
+			"message": err.Error(),
+		})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"code":    0,
+		"message": "ok",
+		"data": gin.H{
+			"id":         user.ID,
+			"username":   user.Username,
+			"avatar_url": user.AvatarURL,
+			"bio":        user.Bio,
+			"created_at": user.CreatedAt,
+			"updated_at": user.UpdatedAt,
+		},
+	})
+}
+
 func (h *UserHandler) Follow(c *gin.Context) {
 	var req FollowRequesst
 	if err := c.ShouldBindJSON(&req); err != nil {

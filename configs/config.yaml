@@ -2,7 +2,7 @@ server:
   port: 8000
 
 mysql:
-  dsn: "root:123456@tcp(127.0.0.1:3308)/feed_community?charset=utf8mb4&parseTime=True&loc=Local"
+  dsn: "root:123456@tcp(127.0.0.1:3308)/feed_system?charset=utf8mb4&parseTime=True&loc=Local"
 
 redis:
   addr: "127.0.0.1:6380"

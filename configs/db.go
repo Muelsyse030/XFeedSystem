@@ -7,9 +7,7 @@ import (
 	"gorm.io/gorm"
 )
 
-func InitDB() *gorm.DB {
-	dsn := "root:123456@tcp(127.0.0.1:3308)/feed_system?charset=utf8mb4&parseTime=True&loc=Local"
-
+func InitDB(dsn string) *gorm.DB {
 	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
 	if err != nil {
 		panic("无法连接到数据库: " + err.Error())

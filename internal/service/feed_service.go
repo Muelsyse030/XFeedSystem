@@ -4,7 +4,9 @@ import (
 	"XFeedSystem/internal/model"
 	"XFeedSystem/internal/pkg/cursor"
 	"XFeedSystem/internal/repo"
+	"XFeedSystem/internal/cache"
 	"context"
+	"time"
 )
 
 type FeedListResponse struct {
@@ -15,10 +17,11 @@ type FeedListResponse struct {
 type FeedService struct {
 	repo     *repo.GormFeedRepo
 	userRepo *repo.GormUserRepo
+	cache 	 *cache.RedisCache
 }
 
-func NewFeedService(r *repo.GormFeedRepo, u *repo.GormUserRepo) *FeedService {
-	return &FeedService{repo: r, userRepo: u}
+func NewFeedService(r *repo.GormFeedRepo, u *repo.GormUserRepo , c *cache.RedisCache) *FeedService {
+	return &FeedService{repo: r, userRepo: u, cache: c}
 }
 
 func (s *FeedService) ListForYou(ctx context.Context, cursorStr string, limit int) (*FeedListResponse, error) {
@@ -137,8 +140,8 @@ func (s *FeedService) ListFollowing(ctx context.Context, userID int64, cursorStr
 	if err != nil {
 		return nil, err
 	}
-
-	followIDs, err := s.userRepo.GetFollowingIDs(ctx, userID)
+	followIDs , err := s.getFollowingIDs(ctx,userID)
+	// followIDs, err := s.userRepo.GetFollowingIDs(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -156,4 +159,24 @@ func (s *FeedService) ListFollowing(ctx context.Context, userID int64, cursorStr
 	}
 
 	return s.buildFeedResponse(ctx, notes)
+}
+func (s *FeedService) getFollowingIDs(ctx context.Context, userID int64) ([]int64, error) {
+	key := cache.FollowingIDsKey(userID)
+	if s.cache != nil {
+		ids , err := s.cache.GetInt64Slice(ctx,key)
+		if err == nil {
+			return ids , nil
+		}
+		if err != cache.ErrRedisMiss {
+			// 如果缓存不存在，则从数据库中获取
+		}
+	}
+	ids , err := s.userRepo.GetFollowingIDs(ctx,userID)
+	if err != nil {
+		return nil,err
+	}
+	if s.cache != nil {
+		_ = s.cache.SetInt64Slice(ctx,key,ids,30*time.Minute)
+	}
+	return ids,nil
 }

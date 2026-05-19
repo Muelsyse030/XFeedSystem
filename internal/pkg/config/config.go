@@ -4,20 +4,20 @@ import "github.com/spf13/viper"
 
 type Config struct {
 	Server struct {
-		Port int
-	}
+		Port int `mapstructure:"port"`
+	} `mapstructure:"server"`
 	MySQL struct {
-		DSN string
-	}
+		DSN string `mapstructure:"dsn"`
+	} `mapstructure:"mysql"`
 	Redis struct {
-		Addr     string
-		Password string
-		DB       int
-	}
+		Addr     string `mapstructure:"addr"`
+		Password string `mapstructure:"password"`
+		DB       int    `mapstructure:"db"`
+	} `mapstructure:"redis"`
 	JWT struct {
-		Secret         string
-		ExpireDuration int
-	}
+		Secret         string `mapstructure:"secret"`
+		ExpireDuration int    `mapstructure:"expire_hours"`
+	} `mapstructure:"jwt"`
 }
 
 func LoadConfig() (*Config, error) {

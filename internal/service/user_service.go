@@ -1,20 +1,26 @@
 package service
 
 import (
+	"XFeedSystem/internal/cache"
 	"XFeedSystem/internal/model"
 	"XFeedSystem/internal/repo"
 	"context"
 	"errors"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm"
 )
+
+var ErrUserNotFound = errors.New("user not found")
 
 type UserService struct {
 	repo repo.UserRepo
+	cache *cache.RedisCache
 }
 
-func NewUserService(r repo.UserRepo) *UserService {
-	return &UserService{repo: r}
+func NewUserService(r repo.UserRepo , c *cache.RedisCache) *UserService {
+	return &UserService{repo: r, cache: c}
 }
 
 func (s *UserService) Register(username, password, confirmPassword string) error {
@@ -58,6 +64,9 @@ func (s *UserService) Login(username string, password string) (*model.User, erro
 func (s *UserService) GetProfile(uid int64) (*model.User, error) {
 	user, err := s.repo.GetProfile(uid)
 	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrUserNotFound
+		}
 		return nil, errors.New("获取用户信息失败")
 	}
 	return user, nil
@@ -73,6 +82,9 @@ func (s *UserService) Follow(ctx context.Context, userID int64, followID int64) 
 	if err := s.repo.Followbyid(ctx, userID, followID); err != nil {
 		return errors.New("关注失败")
 	}
+	if s.cache != nil {
+		_ = s.cache.Delete(ctx,cache.FollowingIDsKey(userID))
+	}
 	return nil
 }
 func (s *UserService) Unfollow(ctx context.Context, userID int64, followID int64) error {
@@ -85,12 +97,31 @@ func (s *UserService) Unfollow(ctx context.Context, userID int64, followID int64
 	if err := s.repo.Delete(ctx, userID, followID); err != nil {
 		return errors.New("关注失败")
 	}
+	if s.cache != nil {
+		_ = s.cache.Delete(ctx,cache.FollowingIDsKey(userID))
+	}
 	return nil
 }
 func (s *UserService) Isfollow(ctx context.Context, userID, followID int64) (bool, error) {
+	key := cache.FollowingIDsKey(userID)
+	if s.cache != nil {
+		if ids , err := s.cache.GetInt64Slice(ctx,key); err == nil{
+			for _,id := range ids{
+				if id == followID{
+					return true , nil
+				}
+			}
+			return false , nil
+		}
+	}
 	isfollow, err := s.repo.Exists(ctx, userID, followID)
 	if err != nil {
 		return false, errors.New("判断错误")
+	}
+	if s.cache != nil {
+		if ids,err := s.repo.GetFollowingIDs(ctx,userID); err == nil{
+			_ = s.cache.SetInt64Slice(ctx,key,ids,30*time.Minute)
+		}
 	}
 	return isfollow, nil
 }

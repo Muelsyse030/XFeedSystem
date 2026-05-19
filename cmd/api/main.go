@@ -9,11 +9,12 @@ import (
 
 func main() {
 	cfg, err := config.LoadConfig()
-	db := configs.InitDB()
 	if err != nil {
 		panic(err)
 	}
-	r := routers.SetupRouter(db)
+
+	db := configs.InitDB(cfg.MySQL.DSN)
+	r := routers.SetupRouter(db, *cfg)
 
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)
 	if err := r.Run(addr); err != nil {
