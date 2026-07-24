@@ -1,0 +1,103 @@
+services:
+  # ---- API 服务 ----
+  api:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: xfeed_api
+    restart: always
+    ports:
+      - "${API_PORT:-8000}:8000"
+    environment:
+      - CONFIG_PATH=/etc/xfeed/configs
+      - XFEED_MYSQL_DSN=${XFEED_MYSQL_DSN}
+      - XFEED_REDIS_ADDR=${XFEED_REDIS_ADDR:-redis:6379}
+      - XFEED_REDIS_PASSWORD=${XFEED_REDIS_PASSWORD:-}
+      - XFEED_JWT_SECRET=${XFEED_JWT_SECRET}
+      - XFEED_JWT_EXPIRE_HOURS=${XFEED_JWT_EXPIRE_HOURS:-72}
+      - XFEED_OSS_ENABLE=${XFEED_OSS_ENABLE:-true}
+      - XFEED_OSS_ENDPOINT=${XFEED_OSS_ENDPOINT}
+      - XFEED_OSS_BUCKET=${XFEED_OSS_BUCKET}
+      - XFEED_OSS_ACCESS_KEY_ID=${XFEED_OSS_ACCESS_KEY_ID}
+      - XFEED_OSS_ACCESS_KEY_SECRET=${XFEED_OSS_ACCESS_KEY_SECRET}
+      - XFEED_OSS_BASE_URL=${XFEED_OSS_BASE_URL}
+      - XFEED_MEILISEARCH_HOST=${XFEED_MEILISEARCH_HOST:-http://meilisearch:7700}
+      - XFEED_MEILISEARCH_API_KEY=${XFEED_MEILISEARCH_API_KEY}
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      meilisearch:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8000/health/ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - backend
+
+  # ---- MySQL ----
+  mysql:
+    image: mysql:8.0
+    container_name: xfeed_mysql
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: feed_system
+    command: --default-authentication-plugin=mysql_native_password
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - backend
+
+  # ---- Redis ----
+  redis:
+    image: redis:7-alpine
+    container_name: xfeed_redis
+    restart: always
+    command: redis-server --appendonly yes ${XFEED_REDIS_PASSWORD:+--requirepass ${XFEED_REDIS_PASSWORD}}
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - backend
+
+  # ---- Meilisearch ----
+  meilisearch:
+    image: getmeili/meilisearch:v1.14
+    container_name: xfeed_meilisearch
+    restart: always
+    environment:
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY}
+      MEILI_ENV: production
+    volumes:
+      - meilisearch_data:/meili_data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:7700/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    networks:
+      - backend
+
+networks:
+  backend:
+    driver: bridge
+
+volumes:
+  mysql_data:
+  redis_data:
+  meilisearch_data:
