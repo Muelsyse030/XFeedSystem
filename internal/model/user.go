@@ -8,6 +8,8 @@ type User struct {
 	PasswordHash string `gorm:"size:255;not null"`
 	AvatarURL    string `gorm:"size:255"`
 	Bio          string `gorm:"size:255"`
+	Role         int8   `gorm:"not null;default:0"`  // 0=普通, 1=管理员, 2=超级管理员
+	Status       int8   `gorm:"not null;default:1"`	// 0=封禁, 1=正常
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
 }

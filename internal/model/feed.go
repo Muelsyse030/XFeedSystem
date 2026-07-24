@@ -8,6 +8,7 @@ type FeedItem struct {
 	Author      AuthorInfo `json:"author"`
 	Title       string     `json:"title"`
 	Content     string     `json:"content"`
+	Images      []string   `json:"images"`
 	Type        int8       `json:"type"`
 	PublishedAt time.Time  `json:"published_at"`
 }
