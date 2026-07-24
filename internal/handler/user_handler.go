@@ -12,6 +12,7 @@ import (
 
 type UserHandler struct {
 	userService *service.UserService
+	jwtService  *middleware.JWTService
 }
 type RegisterRequest struct {
 	Username        string `json:"username"`
@@ -31,9 +32,10 @@ type UpdataUserRequest struct {
 	Bio       string `json:"bio"`
 }
 
-func NewUserHandler(userService *service.UserService) *UserHandler {
+func NewUserHandler(userService *service.UserService, jwtService *middleware.JWTService) *UserHandler {
 	return &UserHandler{
 		userService: userService,
+		jwtService:  jwtService,
 	}
 }
 
@@ -65,7 +67,7 @@ func (h *UserHandler) Login(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	token, err := middleware.GenerateToken(user.ID, user.Username)
+	token, err := h.jwtService.GenerateToken(user.ID, user.Username, user.Role)
 	if err != nil {
 		c.JSON(500, gin.H{"message": "generate token failed"})
 		return
@@ -98,10 +100,10 @@ func (h *UserHandler) Me(c *gin.Context) {
 		"code":    0,
 		"message": "ok",
 		"data": gin.H{
-			"id":       user.ID,
-			"username": user.Username,
+			"id":         user.ID,
+			"username":   user.Username,
 			"avatar_url": user.AvatarURL,
-			"bio": user.Bio,
+			"bio":        user.Bio,
 			"created_at": user.CreatedAt,
 			"updated_at": user.UpdatedAt,
 		},
@@ -209,7 +211,7 @@ func (h *UserHandler) Isfollow(c *gin.Context) {
 		"follow":  isfollow,
 	})
 }
- func (h *UserHandler) Updata(c *gin.Context){
+func (h *UserHandler) Updata(c *gin.Context) {
 	var req UpdataUserRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
@@ -234,7 +236,7 @@ func (h *UserHandler) Isfollow(c *gin.Context) {
 		})
 		return
 	}
-	err := h.userService.Updata(c.Request.Context(),userID,req.AvatarURL,req.Bio)
+	err := h.userService.Updata(c.Request.Context(), userID, req.AvatarURL, req.Bio)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"code":    5001,
@@ -247,4 +249,53 @@ func (h *UserHandler) Isfollow(c *gin.Context) {
 		"message": "ok",
 	})
 	return
- }
+}
+
+func (h *UserHandler) ListFollowing(c *gin.Context) {
+	idStr := c.Param("id")
+	userID, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil || userID <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"code": 4003, "message": "invalid user id"})
+		return
+	}
+	cursor := c.DefaultQuery("cursor", "")
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "10"))
+
+	currentUserID := getCurrentUserID(c) // 从可选 JWT 中获取，未登录返回 0
+
+	resp, err := h.userService.ListFollowing(c.Request.Context(), userID, cursor, limit, currentUserID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 5001, "message": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "ok", "data": resp})
+}
+
+func (h *UserHandler) ListFollowers(c *gin.Context) {
+	idStr := c.Param("id")
+	userID, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil || userID <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"code": 4003, "message": "invalid user id"})
+		return
+	}
+	cursor := c.DefaultQuery("cursor", "")
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "10"))
+
+	currentUserID := getCurrentUserID(c) // 从可选 JWT 中获取，未登录返回 0
+
+	resp, err := h.userService.ListFollowers(c.Request.Context(), userID, cursor, limit, currentUserID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 5001, "message": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "ok", "data": resp})
+}
+
+func getCurrentUserID(c *gin.Context) int64 {
+	if v, ok := c.Get("user_id"); ok {
+		if uid, ok := v.(int64); ok {
+			return uid
+		}
+	}
+	return 0
+}

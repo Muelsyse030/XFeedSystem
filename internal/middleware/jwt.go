@@ -5,6 +5,8 @@ import (
 	"strings"
 	"time"
 
+	"XFeedSystem/internal/pkg/config"
+
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 )
@@ -12,29 +14,45 @@ import (
 type CustomClaims struct {
 	UserID   int64  `json:"uid"`
 	Username string `json:"username"`
+	Role     int8   `json:"role"`
 	jwt.RegisteredClaims
 }
 
-var secret = []byte("your-secret-key")
+type JWTService struct {
+	secret      []byte
+	expireHours int
+}
 
-func GenerateToken(userID int64, username string) (string, error) {
+func NewJWT(cfg *config.Config) *JWTService {
+	expireHours := cfg.JWT.ExpireDuration
+	if expireHours <= 0 {
+		expireHours = 72
+	}
+	return &JWTService{
+		secret:      []byte(cfg.JWT.Secret),
+		expireHours: expireHours,
+	}
+}
+
+func (j *JWTService) GenerateToken(userID int64, username string, role int8) (string, error) {
 	claims := CustomClaims{
 		UserID:   userID,
 		Username: username,
+		Role:     role,
 		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(72 * time.Hour)),
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Duration(j.expireHours) * time.Hour)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
 			Issuer:    "feed-community",
 		},
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return token.SignedString(secret)
+	return token.SignedString(j.secret)
 }
 
-func ParseToken(tokenString string) (*CustomClaims, error) {
+func (j *JWTService) ParseToken(tokenString string) (*CustomClaims, error) {
 	token, err := jwt.ParseWithClaims(tokenString, &CustomClaims{}, func(token *jwt.Token) (interface{}, error) {
-		return secret, nil
+		return j.secret, nil
 	})
 	if err != nil {
 		return nil, err
@@ -48,7 +66,7 @@ func ParseToken(tokenString string) (*CustomClaims, error) {
 	return claims, nil
 }
 
-func JWTAuth() gin.HandlerFunc {
+func (j *JWTService) JWTAuth() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		authHeader := c.GetHeader("Authorization")
 		if authHeader == "" {
@@ -64,40 +82,75 @@ func JWTAuth() gin.HandlerFunc {
 			return
 		}
 
-		claims, err := ParseToken(parts[1])
+		claims, err := j.ParseToken(parts[1])
 		if err != nil {
 			c.JSON(http.StatusUnauthorized, gin.H{"message": "invalid or expired token"})
 			c.Abort()
 			return
 		}
-
 		c.Set("user_id", claims.UserID)
 		c.Set("userID", claims.UserID)
 		c.Set("username", claims.Username)
+		c.Set("role", claims.Role)
 		c.Next()
 	}
 }
-func OptionalJWTAuth() gin.HandlerFunc {
+
+func (j *JWTService) OptionalJWTAuth() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		authHeader := c.GetHeader("Authorization")
 		if authHeader == "" {
 			c.Next()
 			return
 		}
-
 		parts := strings.SplitN(authHeader, " ", 2)
 		if len(parts) != 2 || parts[0] != "Bearer" {
 			c.Next()
 			return
 		}
-
-		claims, err := ParseToken(parts[1])
+		claims, err := j.ParseToken(parts[1])
 		if err == nil {
 			c.Set("user_id", claims.UserID)
 			c.Set("userID", claims.UserID)
 			c.Set("username", claims.Username)
+			c.Set("role", claims.Role)
 		}
+		c.Next()
+	}
+}
 
+func AdminAuth() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		roleVal, exists := c.Get("role")
+		if !exists {
+			c.JSON(http.StatusForbidden, gin.H{"code": 4030, "message": "无管理员权限"})
+			c.Abort()
+			return
+		}
+		role, ok := roleVal.(int8)
+		if !ok || role < 1 {
+			c.JSON(http.StatusForbidden, gin.H{"code": 4030, "message": "无管理员权限"})
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
+}
+
+func SuperAdminAuth() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		roleVal, exists := c.Get("role")
+		if !exists {
+			c.JSON(http.StatusForbidden, gin.H{"code": 4031, "message": "无超级管理员权限"})
+			c.Abort()
+			return
+		}
+		role, ok := roleVal.(int8)
+		if !ok || role < 2 {
+			c.JSON(http.StatusForbidden, gin.H{"code": 4031, "message": "无超级管理员权限"})
+			c.Abort()
+			return
+		}
 		c.Next()
 	}
 }

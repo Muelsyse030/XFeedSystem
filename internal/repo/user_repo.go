@@ -3,6 +3,7 @@ package repo
 import (
 	"XFeedSystem/internal/model"
 	"context"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
@@ -19,7 +20,9 @@ type UserRepo interface {
 	Delete(ctx context.Context, userID, followID int64) error
 	Exists(ctx context.Context, userID, followID int64) (bool, error)
 	GetFollowingIDs(ctx context.Context, userID int64) ([]int64, error)
-	Updata(ctx context.Context,userID int64,avatarURL string,bio string) error
+	Updata(ctx context.Context, userID int64, avatarURL string, bio string) error
+	ListFollowing(ctx context.Context, userID int64, cursor time.Time, limit int) ([]*model.Follow, error)
+	ListFollowers(ctx context.Context, userId int64, cursor time.Time, limit int) ([]*model.Follow, error)
 }
 type GormUserRepo struct {
 	db *gorm.DB
@@ -99,13 +102,13 @@ func (r *GormUserRepo) GetFollowingIDs(ctx context.Context, userID int64) ([]int
 	}
 	return ids, nil
 }
-func (r *GormUserRepo) Updata(ctx context.Context,userID int64,avatarURL string,bio string) error {
+func (r *GormUserRepo) Updata(ctx context.Context, userID int64, avatarURL string, bio string) error {
 	res := r.db.WithContext(ctx).
 		Model(&model.User{}).
 		Where("id = ?", userID).
 		Updates(map[string]interface{}{
 			"avatar_url": avatarURL,
-			"bio": bio,
+			"bio":        bio,
 		})
 	if res.Error != nil {
 		return res.Error
@@ -114,4 +117,30 @@ func (r *GormUserRepo) Updata(ctx context.Context,userID int64,avatarURL string,
 		return gorm.ErrRecordNotFound
 	}
 	return nil
+}
+
+func (r *GormUserRepo) ListFollowing(ctx context.Context, userID int64, cursor time.Time, limit int) ([]*model.Follow, error) {
+	if limit <= 0 || limit > 50 {
+		limit = 10
+	}
+	q := r.db.WithContext(ctx).Where("user_id = ?", userID)
+	if !cursor.IsZero() {
+		q = q.Where("created_at < ?", cursor)
+	}
+	var follows []*model.Follow
+	err := q.Order("created_at DESC").Limit(limit).Find(&follows).Error
+	return follows, err
+}
+
+func (r *GormUserRepo) ListFollowers(ctx context.Context, userID int64, cursor time.Time, limit int) ([]*model.Follow, error) {
+	if limit <= 0 || limit > 50 {
+		limit = 10
+	}
+	q := r.db.WithContext(ctx).Where("follow_id = ?", userID)
+	if !cursor.IsZero() {
+		q = q.Where("created_at < ?", cursor)
+	}
+	var followers []*model.Follow
+	err := q.Order("created_at DESC").Limit(limit).Find(&followers).Error
+	return followers, err
 }

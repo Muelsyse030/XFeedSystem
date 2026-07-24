@@ -20,6 +20,7 @@ func NewGormFeedRepo(db *gorm.DB) *GormFeedRepo {
 type FeedRepo interface {
 	ListForYou(ctx context.Context, cursor *model.FeedCursor, limit int) ([]*model.Note, error)
 	ListFollowing(ctx context.Context, followIDs []int64, cursor *model.FeedCursor, limit int) ([]*model.Note, error)
+	GetByIDs(ctx context.Context, ids []int64) ([]*model.Note, error)
 }
 
 func (r *GormFeedRepo) ListForYou(ctx context.Context, cursor *model.FeedCursor, limit int) ([]*model.Note, error) {
@@ -76,4 +77,13 @@ func (r *GormFeedRepo) ListFollowing(ctx context.Context, followIDs []int64, cur
 	}
 
 	return notes, nil
+}
+
+func (r *GormFeedRepo) GetByIDs(ctx context.Context, ids []int64) ([]*model.Note, error) {
+	var notes []*model.Note
+	err := r.db.WithContext(ctx).
+		Where("id IN ? AND status = ?", ids, model.NoteStatusPublished).
+		Order("published_at DESC").
+		Find(&notes).Error
+	return notes, err
 }

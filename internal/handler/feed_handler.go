@@ -4,6 +4,7 @@ import (
 	"XFeedSystem/internal/service"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 )
@@ -35,9 +36,11 @@ func (h *FeedHandler) List(c *gin.Context) {
 		limit = 10
 	}
 
+	currentUserID := getCurrentUserID(c)
+
 	switch feedType {
 	case "foryou":
-		feedList, err := h.feedService.ListForYou(c.Request.Context(), cursorStr, limit)
+		feedList, err := h.feedService.ListForYou(c.Request.Context(), cursorStr, limit, currentUserID)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"code":    5001,
@@ -80,14 +83,12 @@ func (h *FeedHandler) List(c *gin.Context) {
 			})
 			return
 		}
-
 		c.JSON(http.StatusOK, gin.H{
 			"code":    0,
 			"message": "ok",
 			"data":    feedList,
 		})
 		return
-
 	default:
 		c.JSON(http.StatusBadRequest, gin.H{
 			"code":    4002,
@@ -95,4 +96,44 @@ func (h *FeedHandler) List(c *gin.Context) {
 		})
 		return
 	}
+}
+
+func (h *FeedHandler) Search(c *gin.Context) {
+	keyword := c.Query("q")
+	if strings.TrimSpace(keyword) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    4003,
+			"message": "keyword required",
+		})
+		return
+	}
+	limitStr := c.DefaultQuery("limit", "10")
+	limit, err := strconv.Atoi(limitStr)
+	if err != nil || limit <= 0 || limit > 50 {
+		limit = 10
+	}
+	offsetStr := c.DefaultQuery("offset", "0")
+	offset, err := strconv.Atoi(offsetStr)
+	if err != nil || offset < 0 {
+		offset = 0
+	}
+
+	currentUserID := getCurrentUserID(c)
+	resp, total, err := h.feedService.SearchNotes(c.Request.Context(), keyword, offset, limit, currentUserID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    5003,
+			"message": err.Error(),
+		})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"code":    0,
+		"message": "ok",
+		"data": gin.H{
+			"items":  resp.Items,
+			"offset": offset + limit,
+			"total":  total,
+		},
+	})
 }

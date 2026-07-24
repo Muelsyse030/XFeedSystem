@@ -4,6 +4,7 @@ import (
 	"XFeedSystem/internal/model"
 	"XFeedSystem/internal/service"
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -18,8 +19,10 @@ type NoteHandler struct {
 	noteService *service.NoteService
 }
 type CreateNoteRequest struct {
-	Title   string `json:"title"`
-	Content string `json:"content"`
+	Title   string   `json:"title"`
+	Content string   `json:"content"`
+	Type    int      `json:"type"`
+	Images  []string `json:"images"`
 }
 type NoteResponse struct {
 	ID          int64     `json:"id"`
@@ -61,7 +64,7 @@ func (h *NoteHandler) Create(c *gin.Context) {
 		})
 		return
 	}
-	note, err := h.noteService.Create(userID, req.Title, req.Content)
+	note, err := h.noteService.Create(userID, req.Title, req.Content, req.Images)
 	if err != nil {
 		c.JSON(500, gin.H{
 			"code":    5002,
@@ -77,6 +80,7 @@ func (h *NoteHandler) Create(c *gin.Context) {
 			"author_id":    note.AuthorID,
 			"title":        note.Title,
 			"content":      note.Content,
+			"images":       parseImages(note.Images),
 			"type":         note.Type,
 			"published_at": note.PublishedAt,
 			"created_at":   note.CreatedAt,
@@ -115,6 +119,7 @@ func (h *NoteHandler) ListByUser(c *gin.Context) {
 			"author_id":    note.AuthorID,
 			"title":        note.Title,
 			"content":      note.Content,
+			"images":       parseImages(note.Images),
 			"published_at": note.PublishedAt,
 			"created_at":   note.CreatedAt,
 		})
@@ -147,19 +152,34 @@ func (h *NoteHandler) Detail(c *gin.Context) {
 		})
 		return
 	}
+
+	isLiked := false
+	isFavorited := false
+	if userID, ok := getUserIDFromContext(c); ok {
+		if liked, err := h.noteService.IsLiked(c.Request.Context(), note.ID, userID); err == nil {
+			isLiked = liked
+		}
+		if faved, err := h.noteService.IsFavorite(c.Request.Context(), note.ID, userID); err == nil {
+			isFavorited = faved
+		}
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"code":    0,
 		"message": "ok",
 		"data": gin.H{
-			"id":           note.ID,
-			"author_id":    note.AuthorID,
-			"title":        note.Title,
-			"content":      note.Content,
-			"published_at": note.PublishedAt,
-			"created_at":   note.CreatedAt,
-			"like_count": note.LikeCount,
+			"id":             note.ID,
+			"author_id":      note.AuthorID,
+			"title":          note.Title,
+			"content":        note.Content,
+			"images":         parseImages(note.Images),
+			"published_at":   note.PublishedAt,
+			"created_at":     note.CreatedAt,
+			"like_count":     note.LikeCount,
 			"favorite_count": note.FavoriteCount,
-			"comment_count": note.CommentCount,
+			"comment_count":  note.CommentCount,
+			"is_liked":       isLiked,
+			"is_favorited":   isFavorited,
 		},
 	})
 }
@@ -230,7 +250,7 @@ func (h *NoteHandler) Like(c *gin.Context) {
 		})
 		return
 	}
-	_, err = h.noteService.Like(c.Request.Context(), noteID, userID)
+	created, err := h.noteService.Like(c.Request.Context(), noteID, userID)
 	if err != nil {
 		if errors.Is(err, service.ErrInvalidUserID) {
 			c.JSON(http.StatusBadRequest, gin.H{
@@ -255,6 +275,9 @@ func (h *NoteHandler) Like(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"code":    0,
 		"message": "ok",
+		"data": gin.H{
+			"created": created,
+		},
 	})
 }
 
@@ -276,7 +299,7 @@ func (h *NoteHandler) Unlike(c *gin.Context) {
 		})
 		return
 	}
-	err = h.noteService.Unlike(c.Request.Context(), noteID, userID)
+	deleted, err := h.noteService.Unlike(c.Request.Context(), noteID, userID)
 	if err != nil {
 		if errors.Is(err, service.ErrInvalidUserID) {
 			c.JSON(http.StatusBadRequest, gin.H{
@@ -301,6 +324,9 @@ func (h *NoteHandler) Unlike(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"code":    0,
 		"message": "ok",
+		"data": gin.H{
+			"deleted": deleted,
+		},
 	})
 }
 
@@ -322,7 +348,7 @@ func (h *NoteHandler) Favorite(c *gin.Context) {
 		})
 		return
 	}
-	_, err = h.noteService.Favorite(c.Request.Context(), noteID, userID)
+	created, err := h.noteService.Favorite(c.Request.Context(), noteID, userID)
 	if err != nil {
 		if errors.Is(err, service.ErrInvalidUserID) {
 			c.JSON(http.StatusBadRequest, gin.H{
@@ -347,6 +373,9 @@ func (h *NoteHandler) Favorite(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"code":    0,
 		"message": "ok",
+		"data": gin.H{
+			"created": created,
+		},
 	})
 }
 
@@ -368,7 +397,7 @@ func (h *NoteHandler) Unfavorite(c *gin.Context) {
 		})
 		return
 	}
-	err = h.noteService.Unfavorite(c.Request.Context(), noteID, userID)
+	deleted, err := h.noteService.Unfavorite(c.Request.Context(), noteID, userID)
 	if err != nil {
 		if errors.Is(err, service.ErrInvalidUserID) {
 			c.JSON(http.StatusBadRequest, gin.H{
@@ -393,6 +422,9 @@ func (h *NoteHandler) Unfavorite(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"code":    0,
 		"message": "ok",
+		"data": gin.H{
+			"deleted": deleted,
+		},
 	})
 }
 
@@ -433,6 +465,7 @@ func (h *NoteHandler) ListFavorites(c *gin.Context) {
 			"author_id":    note.AuthorID,
 			"title":        note.Title,
 			"content":      note.Content,
+			"images":       parseImages(note.Images),
 			"published_at": note.PublishedAt,
 			"created_at":   note.CreatedAt,
 		})
@@ -502,7 +535,7 @@ func (h *NoteHandler) Comment(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"code":    200,
 		"message": "ok",
-		"data": h.buildCommentItem(c.Request.Context(), comment, noteID),
+		"data":    h.buildCommentItem(c.Request.Context(), comment, noteID),
 	})
 }
 func (h *NoteHandler) ListComments(c *gin.Context) {
@@ -690,7 +723,7 @@ func (h *NoteHandler) Updata(c *gin.Context) {
 		})
 		return
 	}
-	err = h.noteService.Updata(c.Request.Context(), noteID, userID, req.Title, req.Content)
+	err = h.noteService.Updata(c.Request.Context(), noteID, userID, req.Title, req.Content, req.Images)
 	if err != nil {
 		if errors.Is(err, service.ErrEmptyNoteContent) {
 			c.JSON(http.StatusBadRequest, gin.H{
@@ -716,4 +749,15 @@ func (h *NoteHandler) Updata(c *gin.Context) {
 		"code":    0,
 		"message": "ok",
 	})
+}
+
+func parseImages(imagesJSON string) []string {
+	if imagesJSON == "" {
+		return []string{}
+	}
+	var urls []string
+	if err := json.Unmarshal([]byte(imagesJSON), &urls); err != nil {
+		return []string{}
+	}
+	return urls
 }

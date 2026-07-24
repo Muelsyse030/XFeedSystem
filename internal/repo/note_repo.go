@@ -3,6 +3,7 @@ package repo
 import (
 	"XFeedSystem/internal/model"
 	"context"
+
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -12,7 +13,7 @@ type NoteRepo interface {
 	GetByID(ctx context.Context, id int64) (*model.Note, error)
 	DeleteByID(ctx context.Context, id int64, authorID int64) error
 	ListByAuthorID(ctx context.Context, authorID int64, cursor int64, limit int) ([]*model.Note, error)
-	UpdataByAuthorID(ctx context.Context, noteID, authorID int64, title, content string) error
+	UpdataByAuthorID(ctx context.Context, noteID, authorID int64, title, content, images string) error
 	Like(ctx context.Context, noteID int64, userID int64) (bool, error)
 	Unlike(ctx context.Context, noteID int64, userID int64) (bool, error)
 	IsLiked(ctx context.Context, noteID int64, userID int64) (bool, error)
@@ -218,10 +219,17 @@ func (r *GormNoteRepo) CreateComment(ctx context.Context, userID, noteID, parent
 		ReplyToUserID: replyToUserID,
 		Content:       content,
 	}
-	if err := r.db.WithContext(ctx).Create(comment).Error; err != nil {
-		return nil, err
-	}
-	return comment, nil
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(comment).Error; err != nil {
+			return err
+		}
+		if parentID == 0 {
+			return tx.Model(&model.Note{}).Where("id = ?", noteID).
+				Update("comment_count", gorm.Expr("comment_count + 1")).Error
+		}
+		return nil
+	})
+	return comment, err
 }
 func (r *GormNoteRepo) GetCommentByID(ctx context.Context, commentID int64) (*model.NoteComment, error) {
 	var comment model.NoteComment
@@ -262,28 +270,31 @@ func (r *GormNoteRepo) ListRepliesByParentID(ctx context.Context, noteID, parent
 	return replies, nil
 }
 func (r *GormNoteRepo) DeleteComment(ctx context.Context, commentID int64, userID int64) error {
-	res := r.db.WithContext(ctx).
-		Model(&model.NoteComment{}).
-		Where("id = ? AND user_id = ? AND status = ?", commentID, userID, model.NoteStatusPublished).
-		Updates(map[string]interface{}{
-			"status": model.NoteStatusDeleted,
-		})
-	if res.Error != nil {
-		return res.Error
-	}
-	if res.RowsAffected == 0 {
-		return gorm.ErrRecordNotFound
-	}
-	return nil
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var cm model.NoteComment
+		if err := tx.Where("id = ? AND user_id = ? AND status = ?",
+			commentID, userID, model.NoteStatusPublished).First(&cm).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&cm).Update("status", model.NoteStatusDeleted).Error; err != nil {
+			return err
+		}
+		if cm.ParentID == 0 {
+			return tx.Model(&model.Note{}).Where("id = ?", cm.NoteID).
+				Update("comment_count", gorm.Expr("GREATEST(comment_count - 1, 0)")).Error
+		}
+		return nil
+	})
 }
 
-func (r *GormNoteRepo) UpdataByAuthorID(ctx context.Context, noteID, authorID int64, title, content string) error {
+func (r *GormNoteRepo) UpdataByAuthorID(ctx context.Context, noteID, authorID int64, title, content, images string) error {
 	res := r.db.WithContext(ctx).
 		Model(&model.Note{}).
 		Where("id = ? AND author_id = ? AND status = ?", noteID, authorID, model.NoteStatusPublished).
 		Updates(map[string]interface{}{
 			"title":   title,
 			"content": content,
+			"images":  images,
 		})
 	if res.Error != nil {
 		return res.Error
