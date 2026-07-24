@@ -1,0 +1,18 @@
+-- 006_user_role.sql
+-- users 表新增角色和状态列（兼容已有数据库）
+
+SET @stmt = (SELECT IF(
+    COUNT(*) = 0,
+    'ALTER TABLE users ADD COLUMN role TINYINT NOT NULL DEFAULT 0 COMMENT ''0=普通, 1=管理员, 2=超级管理员''',
+    'SELECT 1'
+) FROM INFORMATION_SCHEMA.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'role');
+PREPARE stmt FROM @stmt; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @stmt = (SELECT IF(
+    COUNT(*) = 0,
+    'ALTER TABLE users ADD COLUMN status TINYINT NOT NULL DEFAULT 1 COMMENT ''0=封禁, 1=正常''',
+    'SELECT 1'
+) FROM INFORMATION_SCHEMA.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'status');
+PREPARE stmt FROM @stmt; EXECUTE stmt; DEALLOCATE PREPARE stmt;

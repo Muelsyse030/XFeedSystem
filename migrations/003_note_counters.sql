@@ -1,12 +1,26 @@
 -- 003_note_counters.sql
--- Add counter columns to notes table.
--- Compatible with MySQL versions that do not support IF NOT EXISTS for ADD COLUMN.
+-- notes 表计数器列（兼容已有数据库，缺失列时补充）
 
-ALTER TABLE notes
-  ADD COLUMN like_count BIGINT NOT NULL DEFAULT 0;
+SET @stmt = (SELECT IF(
+    COUNT(*) = 0,
+    'ALTER TABLE notes ADD COLUMN like_count BIGINT NOT NULL DEFAULT 0',
+    'SELECT 1'
+) FROM INFORMATION_SCHEMA.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'notes' AND COLUMN_NAME = 'like_count');
+PREPARE stmt FROM @stmt; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
-ALTER TABLE notes
-  ADD COLUMN favorite_count BIGINT NOT NULL DEFAULT 0;
+SET @stmt = (SELECT IF(
+    COUNT(*) = 0,
+    'ALTER TABLE notes ADD COLUMN favorite_count BIGINT NOT NULL DEFAULT 0',
+    'SELECT 1'
+) FROM INFORMATION_SCHEMA.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'notes' AND COLUMN_NAME = 'favorite_count');
+PREPARE stmt FROM @stmt; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
-ALTER TABLE notes
-  ADD COLUMN comment_count BIGINT NOT NULL DEFAULT 0;
+SET @stmt = (SELECT IF(
+    COUNT(*) = 0,
+    'ALTER TABLE notes ADD COLUMN comment_count BIGINT NOT NULL DEFAULT 0',
+    'SELECT 1'
+) FROM INFORMATION_SCHEMA.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'notes' AND COLUMN_NAME = 'comment_count');
+PREPARE stmt FROM @stmt; EXECUTE stmt; DEALLOCATE PREPARE stmt;

@@ -1,53 +1,64 @@
--- 001_interactions_mysql.sql
+-- 001_interactions.sql
+-- 互动相关表：点赞、收藏、评论
+-- 同时补充 notes 表的计数器列（兼容已有数据库）
 
 CREATE TABLE IF NOT EXISTS note_likes (
-  id BIGINT PRIMARY KEY AUTO_INCREMENT,
-  note_id BIGINT NOT NULL,
-  user_id BIGINT NOT NULL,
-  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  UNIQUE (note_id, user_id)
-);
-
-CREATE INDEX idx_note_likes_note_id ON note_likes(note_id);
-CREATE INDEX idx_note_likes_user_id ON note_likes(user_id);
+    id         BIGINT PRIMARY KEY AUTO_INCREMENT,
+    note_id    BIGINT   NOT NULL,
+    user_id    BIGINT   NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE INDEX uk_note_user_like (note_id, user_id),
+    INDEX idx_note_likes_note_id (note_id),
+    INDEX idx_note_likes_user_id (user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS note_favorites (
-  id BIGINT PRIMARY KEY AUTO_INCREMENT,
-  note_id BIGINT NOT NULL,
-  user_id BIGINT NOT NULL,
-  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  UNIQUE (note_id, user_id)
-);
-
-CREATE INDEX idx_note_favorites_user_id_id ON note_favorites(user_id, id DESC);
-CREATE INDEX idx_note_favorites_note_id ON note_favorites(note_id);
+    id         BIGINT PRIMARY KEY AUTO_INCREMENT,
+    note_id    BIGINT   NOT NULL,
+    user_id    BIGINT   NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE INDEX uk_note_user_favorite (note_id, user_id),
+    INDEX idx_note_favorites_note_id (note_id),
+    INDEX idx_note_favorites_user_id (user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS note_comments (
-  id BIGINT PRIMARY KEY AUTO_INCREMENT,
-  note_id BIGINT NOT NULL,
-  user_id BIGINT NOT NULL,
-  parent_id BIGINT NOT NULL DEFAULT 0,
-  reply_to_user_id BIGINT NOT NULL DEFAULT 0,
-  content TEXT NOT NULL,
-  status SMALLINT NOT NULL DEFAULT 1,
-  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
+    id              BIGINT PRIMARY KEY AUTO_INCREMENT,
+    note_id         BIGINT   NOT NULL,
+    user_id         BIGINT   NOT NULL,
+    parent_id       BIGINT   NOT NULL DEFAULT 0,
+    reply_to_user_id BIGINT  NOT NULL DEFAULT 0,
+    content         TEXT     NOT NULL,
+    status          SMALLINT NOT NULL DEFAULT 1,
+    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_note_comments_note_id_id (note_id, parent_id, id),
+    INDEX idx_note_comments_user_id (user_id),
+    INDEX idx_note_comments_parent_id (parent_id),
+    INDEX idx_note_comments_reply_to_user_id (reply_to_user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-CREATE INDEX idx_note_comments_note_id_id ON note_comments(note_id, parent_id, id DESC);
-CREATE INDEX idx_note_comments_user_id ON note_comments(user_id);
-CREATE INDEX idx_note_comments_parent_id ON note_comments(parent_id);
-CREATE INDEX idx_note_comments_reply_to_user_id ON note_comments(reply_to_user_id);
+-- 计数器列（兼容已存在的 notes 表但缺少计数器的场景）
+SET @stmt = (SELECT IF(
+    COUNT(*) = 0,
+    'ALTER TABLE notes ADD COLUMN like_count BIGINT NOT NULL DEFAULT 0',
+    'SELECT 1'
+) FROM INFORMATION_SCHEMA.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'notes' AND COLUMN_NAME = 'like_count');
+PREPARE stmt FROM @stmt; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
--- For existing databases, run the following once:
--- ALTER TABLE note_comments ADD COLUMN parent_id BIGINT NOT NULL DEFAULT 0;
--- ALTER TABLE note_comments ADD COLUMN reply_to_user_id BIGINT NOT NULL DEFAULT 0;
--- CREATE INDEX idx_note_comments_parent_id ON note_comments(parent_id);
--- CREATE INDEX idx_note_comments_reply_to_user_id ON note_comments(reply_to_user_id);
--- DROP INDEX idx_note_comments_note_id_id ON note_comments;
--- CREATE INDEX idx_note_comments_note_id_id ON note_comments(note_id, parent_id, id DESC);
+SET @stmt = (SELECT IF(
+    COUNT(*) = 0,
+    'ALTER TABLE notes ADD COLUMN favorite_count BIGINT NOT NULL DEFAULT 0',
+    'SELECT 1'
+) FROM INFORMATION_SCHEMA.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'notes' AND COLUMN_NAME = 'favorite_count');
+PREPARE stmt FROM @stmt; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
-ALTER TABLE notes
-  ADD COLUMN like_count BIGINT NOT NULL DEFAULT 0,
-  ADD COLUMN favorite_count BIGINT NOT NULL DEFAULT 0,
-  ADD COLUMN comment_count BIGINT NOT NULL DEFAULT 0;
+SET @stmt = (SELECT IF(
+    COUNT(*) = 0,
+    'ALTER TABLE notes ADD COLUMN comment_count BIGINT NOT NULL DEFAULT 0',
+    'SELECT 1'
+) FROM INFORMATION_SCHEMA.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'notes' AND COLUMN_NAME = 'comment_count');
+PREPARE stmt FROM @stmt; EXECUTE stmt; DEALLOCATE PREPARE stmt;
