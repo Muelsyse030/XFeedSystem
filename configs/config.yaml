@@ -10,5 +10,21 @@ redis:
   db: 0
 
 jwt:
-  secret: "your-secret-key"
+  # 生产环境必须通过 XFEED_JWT_SECRET 环境变量覆盖
+  secret: "dev-secret-change-in-production"
   expire_hours: 72
+
+oss:
+  enable: true
+  endpoint: "oss-cn-beijing.aliyuncs.com"
+  bucket: "xfeedsystem"
+  # 生产环境通过 XFEED_OSS_ACCESS_KEY_ID / XFEED_OSS_ACCESS_KEY_SECRET 覆盖
+  access_key_id: ""
+  access_key_secret: ""
+  base_url: "https://xfeedsystem.oss-cn-beijing.aliyuncs.com"
+
+meilisearch:
+  host: "http://127.0.0.1:7700"
+  # 生产环境通过 XFEED_MEILISEARCH_API_KEY 覆盖
+  api_key: "masterKey"
+  index: "notes"

@@ -13,7 +13,16 @@ func InitDB(dsn string) *gorm.DB {
 		panic("无法连接到数据库: " + err.Error())
 	}
 
-	if err := db.AutoMigrate(&model.User{}); err != nil {
+	if err := db.AutoMigrate(
+		&model.User{},
+		&model.Note{},
+		&model.Follow{},
+		&model.NoteLike{},
+		&model.NoteFavorite{},
+		&model.NoteComment{},
+		&model.Notification{},
+		&model.Block{},
+	); err != nil {
 		panic("自动迁移失败: " + err.Error())
 	}
 

@@ -12,6 +12,7 @@ type Note struct {
 	AuthorID      int64  `gorm:"not null;index"`
 	Title         string `gorm:"size:255;not null;default:''"`
 	Content       string `gorm:"type:text;not null"`
+	Images        string `gorm:"type:json"`
 	Status        int8   `gorm:"not null;default:1"`
 	Type          int8   `gorm:"not null;default:1"`
 	LikeCount     int64  `gorm:"not null;default:0"`
