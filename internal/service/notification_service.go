@@ -3,9 +3,9 @@ package service
 import (
 	"XFeedSystem/internal/cache"
 	"XFeedSystem/internal/model"
+	"XFeedSystem/internal/pkg/logger"
 	"XFeedSystem/internal/repo"
 	"context"
-	"log"
 	"strconv"
 	"time"
 )
@@ -33,7 +33,7 @@ func (s *NotificationService) Create(ctx context.Context, actorID, userID int64,
 		Message:      message,
 	}
 	if err := s.repo.Create(ctx, notif); err != nil {
-		log.Printf("create notification failed :%v", err)
+		logger.Sugar.Warnf("create notification failed :%v", err)
 		return
 	}
 	if s.cache != nil {

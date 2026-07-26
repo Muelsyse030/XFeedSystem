@@ -2,7 +2,6 @@ package routers
 
 import (
 	"context"
-	"log"
 
 	"XFeedSystem/internal/cache"
 	"XFeedSystem/internal/handler"
@@ -10,6 +9,7 @@ import (
 	"XFeedSystem/internal/pkg/config"
 	"XFeedSystem/internal/repo"
 	"XFeedSystem/internal/service"
+	"XFeedSystem/internal/pkg/logger"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -18,10 +18,11 @@ import (
 func SetupRouter(db *gorm.DB, appCfg config.Config) *gin.Engine {
 
 	r := gin.Default()
+	r.Use(middleware.LoggerMiddleware())
 	redisCache := cache.NewRedisCache(appCfg.Redis.Addr, appCfg.Redis.Password, appCfg.Redis.DB)
 	searchRepo := repo.NewSearchRepo(appCfg.Meilisearch.Host, appCfg.Meilisearch.APIKey, appCfg.Meilisearch.Index)
 	if err := searchRepo.EnsureIndex(context.Background()); err != nil {
-		log.Printf("warn: init meilisearch index: %v", err)
+		logger.Sugar.Warnf("warn: init meilisearch index: %v", err)
 	}
 
 	jwtService := middleware.NewJWT(&appCfg)
@@ -50,7 +51,7 @@ func SetupRouter(db *gorm.DB, appCfg config.Config) *gin.Engine {
 	feedHandler := handler.NewFeedHandler(feedService)
 	storageService, err := service.NewStorageService(appCfg)
 	if err != nil {
-		log.Printf("warn: init oss storage: %v", err)
+		logger.Sugar.Warnf("warn: init oss storage: %v", err)
 	}
 	uploadHandler := handler.NewUploadHandler(storageService)
 
@@ -74,12 +75,16 @@ func SetupRouter(db *gorm.DB, appCfg config.Config) *gin.Engine {
 			c.JSON(503, gin.H{"status": "not ready", "reason": "redis unreachable"})
 			return
 		}
+		if !searchRepo.IsHealthy(c.Request.Context()) {
+        c.JSON(503, gin.H{"status": "not ready", "reason": "meilisearch unreachable"})
+        return
+    	}
 		c.JSON(200, gin.H{"status": "ready"})
 	})
 
 	r.POST("/register", userHandler.Register)
 	r.POST("/login", userHandler.Login)
-	r.POST("/upload/image", uploadHandler.Image)
+	
 
 	r.GET("/notes/:id", jwtService.OptionalJWTAuth(), noteHandler.Detail)
 	r.GET("/users/:id/notes", noteHandler.ListByUser)
@@ -119,6 +124,8 @@ func SetupRouter(db *gorm.DB, appCfg config.Config) *gin.Engine {
 
 		auth.POST("/users/:id/block", blockHandler.Block)
 		auth.DELETE("/users/:id/unblock", blockHandler.Unblock)
+
+		auth.POST("/upload/image", uploadHandler.Image)
 	}
 
 	admin := auth.Group("/admin")

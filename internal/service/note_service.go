@@ -3,11 +3,11 @@ package service
 import (
 	"XFeedSystem/internal/cache"
 	"XFeedSystem/internal/model"
+	"XFeedSystem/internal/pkg/logger"
 	"XFeedSystem/internal/repo"
 	"context"
 	"encoding/json"
 	"errors"
-	"log"
 	"strings"
 	"time"
 
@@ -24,6 +24,17 @@ var (
 	ErrEmptyNoteContent = errors.New("title and content must not be empty")
 	ErrBlocked          = errors.New("无法互动：你已拉黑对方或被对方拉黑")
 )
+
+func safeGo(fn func()) {
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				logger.Sugar.Errorf("goroutine panic recovered: %v", r)
+			}
+		}()
+		fn()
+	}()
+}
 
 func marshalImages(images []string) string {
 	if images == nil {
@@ -69,7 +80,8 @@ func (s *NoteService) Create(userID int64, title, content string, images []strin
 		cache.FeedForYouKey(10),
 		cache.FeedForYouKey(20))
 	if s.search != nil {
-		go func(n *model.Note) {
+		n := note
+		safeGo(func() {
 			_ = s.search.Index(context.Background(), &repo.NoteDocument{
 				ID:          n.ID,
 				AuthorID:    n.AuthorID,
@@ -78,7 +90,7 @@ func (s *NoteService) Create(userID int64, title, content string, images []strin
 				Type:        n.Type,
 				PublishedAt: n.PublishedAt.Unix(),
 			})
-		}(note)
+		})
 	}
 	return note, nil
 }
@@ -110,7 +122,7 @@ func (s *NoteService) GetByID(ctx context.Context, id int64) (*model.Note, error
 	}
 	n, err := s.repo.GetByID(ctx, id)
 	if err != nil {
-		log.Printf("GetByID repo err: %v", err)
+		logger.Sugar.Errorf("GetByID repo err: %v", err)
 		return nil, err
 	}
 	if s.cache != nil {
@@ -130,9 +142,9 @@ func (s *NoteService) Delete(ctx context.Context, id int64, authorID int64) erro
 		cache.UserNotesKey(authorID, 20),
 	)
 	if s.search != nil {
-		go func() {
+		safeGo(func() {
 			_ = s.search.Delete(context.Background(), id)
-		}()
+		})
 	}
 	return nil
 }
@@ -158,7 +170,10 @@ func (s *NoteService) Like(ctx context.Context, noteID, userID int64) (bool, err
 	if created && s.notifSvc != nil {
 		note, _ := s.repo.GetByID(ctx, noteID)
 		if note != nil {
-			go s.notifSvc.Create(context.Background(), userID, note.AuthorID, model.NotifTypeLike, noteID, noteID, "赞了你的笔记")
+			n := note
+			safeGo(func() {
+				s.notifSvc.Create(context.Background(), userID, n.AuthorID, model.NotifTypeLike, noteID, noteID, "赞了你的笔记")
+			})
 		}
 	}
 	return created, err
@@ -202,7 +217,10 @@ func (s *NoteService) Favorite(ctx context.Context, noteID, userID int64) (bool,
 	if created && s.notifSvc != nil {
 		note, _ := s.repo.GetByID(ctx, noteID)
 		if note != nil {
-			go s.notifSvc.Create(context.Background(), userID, note.AuthorID, model.NotifTypeFavorite, noteID, noteID, "收藏了你的笔记")
+			n := note
+			safeGo(func() {
+				s.notifSvc.Create(context.Background(), userID, n.AuthorID, model.NotifTypeFavorite, noteID, noteID, "收藏了你的笔记")
+			})
 		}
 	}
 	return created, err
@@ -282,12 +300,17 @@ func (s *NoteService) CreateReply(ctx context.Context, userID, noteID, parentID,
 		return nil, err
 	}
 	if s.notifSvc != nil {
+		n := note
 		if parentID == 0 {
-			go s.notifSvc.Create(context.Background(), userID, note.AuthorID,
-				model.NotifTypeComment, comment.ID, noteID, "评论了你的笔记")
+			safeGo(func() {
+				s.notifSvc.Create(context.Background(), userID, n.AuthorID,
+					model.NotifTypeComment, comment.ID, noteID, "评论了你的笔记")
+			})
 		} else {
-			go s.notifSvc.Create(context.Background(), userID, replyToUserID,
-				model.NotifTypeReply, comment.ID, noteID, "回复了你")
+			safeGo(func() {
+				s.notifSvc.Create(context.Background(), userID, replyToUserID,
+					model.NotifTypeReply, comment.ID, noteID, "回复了你")
+			})
 		}
 	}
 	return comment, nil
@@ -354,7 +377,7 @@ func (s *NoteService) Updata(ctx context.Context, noteID, authorID int64, title,
 		cache.UserNotesKey(authorID, 20),
 	)
 	if s.search != nil {
-		go func() {
+		safeGo(func() {
 			_, err := s.repo.GetByID(ctx, noteID)
 			if err != nil {
 				return
@@ -366,7 +389,7 @@ func (s *NoteService) Updata(ctx context.Context, noteID, authorID int64, title,
 				AuthorID:    authorID,
 				PublishedAt: time.Now().Unix(),
 			})
-		}()
+		})
 	}
 
 	return nil

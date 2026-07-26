@@ -6,12 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"mime/multipart"
 	"path/filepath"
 	"strings"
 
 	"XFeedSystem/internal/pkg/config"
+	"XFeedSystem/internal/pkg/logger"
 
 	"github.com/aliyun/aliyun-oss-go-sdk/oss"
 	"github.com/google/uuid"
@@ -30,7 +30,7 @@ func NewStorageService(cfg config.Config) (*StorageService, error) {
 		return &StorageService{cfg: cfg}, nil
 	}
 	if cfg.OSS.Endpoint == "" || cfg.OSS.Bucket == "" || cfg.OSS.AccessKeyID == "" || cfg.OSS.AccessKeySecret == "" {
-		log.Printf("[WARN] OSS 配置不完整，已自动禁用图片上传功能。请配置 XFEED_OSS_* 环境变量后重启。")
+		logger.Sugar.Warnf("[WARN] OSS 配置不完整，已自动禁用图片上传功能。请配置 XFEED_OSS_* 环境变量后重启。")
 		cfg.OSS.Enable = false
 		return &StorageService{cfg: cfg}, nil
 	}

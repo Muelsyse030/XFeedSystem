@@ -120,8 +120,10 @@ func (s *UserService) Follow(ctx context.Context, userID int64, followID int64) 
 		_ = s.cache.SAdd(ctx, key, followID)
 	}
 	if s.notifSvc != nil {
-		go s.notifSvc.Create(context.Background(), userID, followID,
-			model.NotifTypeFollow, followID, 0, "关注了你")
+		safeGo(func() {
+			s.notifSvc.Create(context.Background(), userID, followID,
+				model.NotifTypeFollow, followID, 0, "关注了你")
+		})
 	}
 	return nil
 }

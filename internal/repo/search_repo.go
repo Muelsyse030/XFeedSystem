@@ -97,3 +97,7 @@ func (r *SearchRepo) Search(ctx context.Context, keyword string, offset, limit i
 		Total: res.EstimatedTotalHits,
 	}, nil
 }
+
+func (r *SearchRepo) IsHealthy(ctx context.Context) bool {
+    return r.client.IsHealthy()
+}

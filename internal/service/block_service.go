@@ -18,7 +18,6 @@ func NewBlockService(r repo.BlockRepo, ur *repo.GormUserRepo, c *cache.RedisCach
 	return &BlockService{repo: r, userRepo: ur, cache: c}
 }
 
-
 func (s *BlockService) Block(ctx context.Context, userID, blockedID int64) error {
 	if userID == blockedID {
 		return errors.New("不能拉黑自己")
