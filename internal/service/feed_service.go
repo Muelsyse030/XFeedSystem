@@ -30,79 +30,87 @@ func NewFeedService(r *repo.GormFeedRepo, u *repo.GormUserRepo, c *cache.RedisCa
 }
 
 func (s *FeedService) ListForYou(ctx context.Context, cursorStr string, limit int, currentUserID int64) (*FeedListResponse, error) {
-	feedCursor, err := cursor.ParseFeedCursor(cursorStr)
-	if err != nil {
-		return nil, err
-	}
+	 // 1. 解析分数游标
+    cursorScore, cursorID, err := cursor.ParseScoreCursor(cursorStr)
+    if err != nil {
+        return nil, err
+    }
 
-	// 只缓存首页
-	if feedCursor == nil && s.cache != nil {
-		var resp FeedListResponse
-		if err := s.cache.GetJSON(ctx, cache.FeedForYouKey(limit), &resp); err == nil {
-			return &resp, nil
-		}
-	}
+    // 2. 首页查缓存（key 要区分用户，因为不同用户看到的内容不同）
+    if cursorID == 0 && s.cache != nil {
+        var resp FeedListResponse
+        cacheKey := cache.FeedForYouKeyV2(currentUserID, limit) // 新 key，区分用户
+        if err := s.cache.GetJSON(ctx, cacheKey, &resp); err == nil {
+            return &resp, nil
+        }
+    }
 
-	notes, err := s.repo.ListForYou(ctx, feedCursor, limit)
-	if err != nil {
-		return nil, err
-	}
-	notes = s.filterBlockedNotes(ctx, currentUserID, notes)
+    // 3. 拉候选池
+    notes, err := s.repo.ListRecent(ctx, PoolSize)
+    if err != nil {
+        return nil, err
+    }
+    notes = s.filterBlockedNotes(ctx, currentUserID, notes)
 
-	authorIDs := make([]int64, 0, len(notes))
-	seen := make(map[int64]struct{}, len(notes))
-	for _, note := range notes {
-		if _, ok := seen[note.AuthorID]; ok {
-			continue
-		}
-		seen[note.AuthorID] = struct{}{}
-		authorIDs = append(authorIDs, note.AuthorID)
-	}
+    // 4. 准备加权数据（仅登录用户）
+    var followingSet map[int64]bool
+    var typePref map[int8]float64
+    if currentUserID > 0 {
+        if ids, err := s.getFollowingIDs(ctx, currentUserID); err == nil {
+            followingSet = make(map[int64]bool, len(ids))
+            for _, id := range ids {
+                followingSet[id] = true
+            }
+        }
+        typePref, _ = s.repo.GetUserTypePreference(ctx, currentUserID)
+    }
 
-	users, err := s.userRepo.GetByIDs(authorIDs)
-	if err != nil {
-		return nil, err
-	}
+    // 5. 打分排序
+    scored := scoreAndSort(notes, time.Now(), followingSet, typePref)
 
-	userMap := make(map[int64]*model.User, len(users))
-	for _, u := range users {
-		userMap[u.ID] = u
-	}
+    // 6. 游标分页
+    // 如果传了 cursor，找到游标位置，从后面开始取
+    startIdx := 0
+    if cursorID > 0 {
+        for i, sn := range scored {
+            if sn.Score < cursorScore || (sn.Score == cursorScore && sn.Note.ID < cursorID) {
+                startIdx = i + 1
+                break
+            }
+        }
+    }
 
-	items := make([]model.FeedItem, 0, len(notes))
-	nextCursor := ""
-	for _, note := range notes {
-		item := model.FeedItem{
-			ID:          note.ID,
-			AuthorID:    note.AuthorID,
-			Title:       note.Title,
-			Content:     cursor.BuildSummary(note.Content, 100),
-			Images:      parseFeedImages(note.Images),
-			Type:        note.Type,
-			PublishedAt: note.PublishedAt,
-		}
-		if u, ok := userMap[note.AuthorID]; ok {
-			item.Author = model.AuthorInfo{
-				ID:        u.ID,
-				Username:  u.Username,
-				AvatarURL: u.AvatarURL,
-			}
-		}
-		items = append(items, item)
-		nextCursor = cursor.EncodeFeedCursor(note.PublishedAt, note.ID)
-	}
+    // 7. 取 limit 条
+    endIdx := startIdx + limit
+    if endIdx > len(scored) {
+        endIdx = len(scored)
+    }
+    page := scored[startIdx:endIdx]
+    if len(page) == 0 {
+        return &FeedListResponse{Items: []model.FeedItem{}, NextCursor: ""}, nil
+    }
 
-	resp := &FeedListResponse{
-		Items:      items,
-		NextCursor: nextCursor,
-	}
+    // 8. 组装响应（复用现有 buildFeedResponse 逻辑，但输入是 []*model.Note）
+    pageNotes := make([]*model.Note, len(page))
+    for i, sn := range page {
+        pageNotes[i] = sn.Note
+    }
 
-	// 首页写入缓存
-	if feedCursor == nil && s.cache != nil {
-		_ = s.cache.SetJSON(ctx, cache.FeedForYouKey(limit), resp, feedCacheTTL)
-	}
+    resp, err := s.buildFeedResponse(ctx, pageNotes)
+    if err != nil {
+        return nil, err
+    }
 
-	return resp, nil
+    // 9. 下一页游标 = 本页最后一条的 score + id
+    last := page[len(page)-1]
+    resp.NextCursor = cursor.EncodeScoreCursor(last.Score, last.Note.ID)
+
+    // 10. 首页写缓存
+    if cursorID == 0 && s.cache != nil {
+        _ = s.cache.SetJSON(ctx, cache.FeedForYouKeyV2(currentUserID, limit), resp, 5*time.Minute)
+    }
+
+    return resp, nil
 }
 
 func (s *FeedService) buildFeedResponse(ctx context.Context, notes []*model.Note) (*FeedListResponse, error) {
@@ -316,3 +324,4 @@ func (s *FeedService) filterBlockedNotes(ctx context.Context, userID int64, note
 	}
 	return filtered
 }
+

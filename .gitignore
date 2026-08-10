@@ -4,6 +4,7 @@
 # Build
 build/
 xfeed-api
+main
 
 # IDE
 .vscode/

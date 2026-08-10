@@ -2,8 +2,10 @@ package config
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 
+	"github.com/joho/godotenv"
 	"github.com/spf13/viper"
 )
 
@@ -49,33 +51,48 @@ func LoadConfig() (*Config, error) {
 	viper.SetConfigType("yaml")
 	viper.AddConfigPath(configPath)
 
-	// 环境变量覆盖 yaml 配置
-	// 例如 XFEED_JWT_SECRET 覆盖 jwt.secret，XFEED_MYSQL_DSN 覆盖 mysql.dsn
+	// 环境变量覆盖 yaml 配置（只对显式 SetEnvPrefix+BindEnv 的 key 生效）
 	viper.SetEnvPrefix("XFEED")
 	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	viper.AutomaticEnv()
 
-	// 绑定关键配置项到环境变量
-	viper.BindEnv("mysql.dsn")
-	viper.BindEnv("redis.addr")
-	viper.BindEnv("redis.password")
-	viper.BindEnv("jwt.secret")
-	viper.BindEnv("jwt.expire_hours")
-	viper.BindEnv("oss.enable")
-	viper.BindEnv("oss.endpoint")
-	viper.BindEnv("oss.bucket")
 	viper.BindEnv("oss.access_key_id")
 	viper.BindEnv("oss.access_key_secret")
-	viper.BindEnv("oss.base_url")
-	viper.BindEnv("meilisearch.host")
-	viper.BindEnv("meilisearch.api_key")
+	viper.BindEnv("jwt.secret")
 
 	if err := viper.ReadInConfig(); err != nil {
 		return nil, err
 	}
+
+	// 从 .env 文件只读取 OSS 密钥（不影响其他任何配置）
+	envMap := loadEnvFile(configPath)
+	if ak, ok := envMap["XFEED_OSS_ACCESS_KEY_ID"]; ok && ak != "" {
+		viper.Set("oss.access_key_id", ak)
+	}
+	if sk, ok := envMap["XFEED_OSS_ACCESS_KEY_SECRET"]; ok && sk != "" {
+		viper.Set("oss.access_key_secret", sk)
+	}
+
 	var config Config
 	if err := viper.Unmarshal(&config); err != nil {
 		return nil, err
 	}
 	return &config, nil
+}
+
+// loadEnvFile 查找并解析 .env 文件，只返回 map，不修改进程环境变量
+func loadEnvFile(configPath string) map[string]string {
+	candidates := []string{"/opt/xfeed/.env"}
+	if wd, err := os.Getwd(); err == nil {
+		candidates = append(candidates, filepath.Join(wd, ".env"))
+	}
+	if configPath != "" {
+		candidates = append(candidates, filepath.Join(configPath, "..", ".env"))
+	}
+	for _, f := range candidates {
+		if m, err := godotenv.Read(f); err == nil {
+			return m
+		}
+	}
+	return nil
 }

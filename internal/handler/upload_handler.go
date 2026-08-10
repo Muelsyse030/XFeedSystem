@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"XFeedSystem/internal/pkg/logger"
 	"XFeedSystem/internal/service"
 	"net/http"
 	"strings"
@@ -31,10 +32,12 @@ func (h *UploadHandler) Image(c *gin.Context) {
 
 	url, err := h.storageService.UploadImage(c.Request.Context(), file, header, "images")
 	if err != nil {
+		logger.Sugar.Errorf("upload image failed: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"code": 5001, "message": err.Error()})
 		return
 	}
 
+	logger.Sugar.Infof("upload image success, url: %s, filename: %s, size: %d", url, header.Filename, header.Size)
 	c.JSON(http.StatusOK, gin.H{
 		"code":    0,
 		"message": "ok",

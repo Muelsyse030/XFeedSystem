@@ -230,3 +230,7 @@ func (c *RedisCache) Incr(ctx context.Context, key string) (int64, error) {
 func BlockedIDsKey(userID int64) string {
 	return fmt.Sprintf("block:blocked:%d", userID)
 }
+
+func FeedForYouKeyV2(userID int64 , limit int) string {
+	return fmt.Sprintf("feed:foryou:%d:%d", userID, limit)
+}

@@ -59,7 +59,14 @@ func (s *StorageService) UploadImage(ctx context.Context, file multipart.File, h
 		ext = ".png"
 	}
 	objectKey := fmt.Sprintf("%s/%s%s", strings.Trim(prefix, "/"), uuid.NewString(), ext)
-	if err := s.bucket.PutObject(objectKey, bytes.NewReader(data)); err != nil {
+	contentType := header.Header.Get("Content-Type")
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	if err := s.bucket.PutObject(objectKey, bytes.NewReader(data),
+		oss.ObjectACL(oss.ACLPublicRead),
+		oss.ContentType(contentType),
+	); err != nil {
 		return "", err
 	}
 	if s.cfg.OSS.BaseURL != "" {
