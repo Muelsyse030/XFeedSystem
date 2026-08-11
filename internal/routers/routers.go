@@ -48,7 +48,7 @@ func SetupRouter(db *gorm.DB, appCfg config.Config) *gin.Engine {
 	noteHandler := handler.NewNoteHandler(noteService, userRepo)
 	feedRepo := repo.NewGormFeedRepo(db)
 	feedService := service.NewFeedService(feedRepo, userRepo, redisCache, searchRepo, blockService)
-	feedHandler := handler.NewFeedHandler(feedService)
+	feedHandler := handler.NewFeedHandler(feedService, redisCache)
 	storageService, err := service.NewStorageService(appCfg)
 	if err != nil {
 		logger.Sugar.Warnf("warn: init oss storage: %v", err)

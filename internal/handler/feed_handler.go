@@ -1,22 +1,25 @@
 package handler
 
 import (
-	"XFeedSystem/internal/service"
+	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
+
+	"XFeedSystem/internal/cache"
+	"XFeedSystem/internal/service"
 
 	"github.com/gin-gonic/gin"
 )
 
 type FeedHandler struct {
 	feedService *service.FeedService
+	cache       *cache.RedisCache
 }
 
-func NewFeedHandler(feedService *service.FeedService) *FeedHandler {
-	return &FeedHandler{
-		feedService: feedService,
-	}
+func NewFeedHandler(feedService *service.FeedService, cache *cache.RedisCache) *FeedHandler {
+	return &FeedHandler{feedService: feedService, cache: cache}
 }
 
 func (h *FeedHandler) List(c *gin.Context) {
@@ -40,6 +43,15 @@ func (h *FeedHandler) List(c *gin.Context) {
 
 	switch feedType {
 	case "foryou":
+		// 首页（无游标）命中原始字节缓存时零序列化直接返回
+		if cursorStr == "" && h.cache != nil {
+			cacheKey := cache.FeedForYouRawKey(currentUserID, limit)
+			if body, err := h.cache.Get(c.Request.Context(), cacheKey); err == nil {
+				c.Data(http.StatusOK, "application/json; charset=utf-8", []byte(body))
+				return
+			}
+		}
+
 		feedList, err := h.feedService.ListForYou(c.Request.Context(), cursorStr, limit, currentUserID)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
@@ -49,11 +61,19 @@ func (h *FeedHandler) List(c *gin.Context) {
 			return
 		}
 
-		c.JSON(http.StatusOK, gin.H{
-			"code":    0,
-			"message": "ok",
-			"data":    feedList,
-		})
+		resp := gin.H{"code": 0, "message": "ok", "data": feedList}
+		body, err := json.Marshal(resp)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"code":    5001,
+				"message": err.Error(),
+			})
+			return
+		}
+		if cursorStr == "" && h.cache != nil {
+			_ = h.cache.Set(c.Request.Context(), cache.FeedForYouRawKey(currentUserID, limit), string(body), 10*time.Second)
+		}
+		c.Data(http.StatusOK, "application/json; charset=utf-8", body)
 		return
 
 	case "following":

@@ -238,3 +238,11 @@ func FeedForYouKeyV2(userID int64 , limit int) string {
 func ScoredPoolKey(userID int64) string {
 	return fmt.Sprintf("feed:scoredpool:v1:%d", userID)
 }
+
+func FeedForYouRawKey(userID int64 , limit int) string {
+	return fmt.Sprintf("feed:foryou:raw:%d:%d",userID , limit)
+}
+
+func UserTypePrefKey(userID int64) string {
+	return fmt.Sprintf("feed:typepref:%d",userID)
+}

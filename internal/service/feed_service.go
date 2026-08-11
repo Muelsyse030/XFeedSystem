@@ -8,8 +8,12 @@ import (
 	"context"
 	"encoding/json"
 	"time"
+	"sync"
 )
-
+var(
+	poolLockMu sync.Mutex
+	poolLocks = make(map[int64]*sync.Mutex)
+)
 const(
 	feedCacheTTL = 5 * time.Second
 	scoredPoolTTL = 10 * time.Second
@@ -179,7 +183,16 @@ func (s *FeedService) getScoredPool(ctx context.Context, currentUserID int64) (*
 			return &pool, nil
 		}
 	}
+	
+	lock := poolLockFor(currentUserID)
+	lock.Lock()
+	defer lock.Unlock()
 
+	if s.cache != nil {
+		if err := s.cache.GetJSON(ctx, key, &pool); err == nil && len(pool.Items) > 0 {
+			return &pool, nil
+		}
+	}
 	// 拉候选池（ListRecent 已优化为只查必要列）
 	notes, err := s.repo.ListRecent(ctx, PoolSize)
 	if err != nil {
@@ -197,7 +210,7 @@ func (s *FeedService) getScoredPool(ctx context.Context, currentUserID int64) (*
 				followingSet[id] = true
 			}
 		}
-		typePref, _ = s.repo.GetUserTypePreference(ctx, currentUserID)
+		typePref = s.getTypePref(ctx, currentUserID)
 	}
 
 	// 打分排序并写入缓存
@@ -375,3 +388,26 @@ func (s *FeedService) filterBlockedNotes(ctx context.Context, userID int64, note
 	return filtered
 }
 
+func (s *FeedService) getTypePref(ctx context.Context, userID int64) map[int8]float64 {
+	key := cache.UserTypePrefKey(userID)
+	var pref map[int8]float64
+	if s.cache != nil && s.cache.GetJSON(ctx, key, &pref) == nil {
+		return pref
+	}
+	pref, _ = s.repo.GetUserTypePreference(ctx, userID)
+	if s.cache != nil {
+		_ = s.cache.SetJSON(ctx, key, pref, 10*time.Minute)
+	}
+	return pref
+}
+
+func poolLockFor(userID int64) *sync.Mutex {
+	poolLockMu.Lock()
+	defer poolLockMu.Unlock()
+	if l, ok := poolLocks[userID]; ok {
+		return l
+	}
+	l := &sync.Mutex{}
+	poolLocks[userID] = l
+	return l
+}

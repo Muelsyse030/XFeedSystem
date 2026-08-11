@@ -84,6 +84,7 @@ func (r *GormFeedRepo) ListFollowing(ctx context.Context, followIDs []int64, cur
 func (r *GormFeedRepo) GetByIDs(ctx context.Context, ids []int64) ([]*model.Note, error) {
 	var notes []*model.Note
 	err := r.db.WithContext(ctx).
+		Select("id", "author_id", "title", "content", "images", "type", "published_at").
 		Where("id IN ? AND status = ?", ids, model.NoteStatusPublished).
 		Order("published_at DESC").
 		Find(&notes).Error
