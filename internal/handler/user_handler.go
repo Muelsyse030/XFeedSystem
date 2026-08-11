@@ -157,7 +157,7 @@ func (h *UserHandler) GetProfile(c *gin.Context) {
 	}
 	body, err := json.Marshal(resp)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 4004, "message": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 5004, "message": err.Error()})
 		return
 	}
 	if h.cache != nil {
@@ -261,11 +261,13 @@ func (h *UserHandler) Updata(c *gin.Context) {
 		})
 		return
 	}
+	if h.cache != nil {
+		_ = h.cache.Delete(c.Request.Context(), cache.UserProfileRawKey(userID))
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"code":    0,
 		"message": "ok",
 	})
-	return
 }
 
 func (h *UserHandler) ListFollowing(c *gin.Context) {

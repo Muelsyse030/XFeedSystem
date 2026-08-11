@@ -227,11 +227,43 @@ func (c *RedisCache) Incr(ctx context.Context, key string) (int64, error) {
 	return c.client.Incr(ctx, key).Result()
 }
 
+// ---------- Feed 引擎 ZSET ----------
+
+func FeedEngineKey(userID int64) string {
+	return fmt.Sprintf("feed:engine:v1:%d", userID)
+}
+
+func (c *RedisCache) Exists(ctx context.Context, key string) (bool, error) {
+	n, err := c.client.Exists(ctx, key).Result()
+	return n > 0, err
+}
+
+// ZAddFeed 批量写入打分 ZSET（score 为已折叠的整数分数，无并列）并设置 TTL
+func (c *RedisCache) ZAddFeed(ctx context.Context, key string, scores map[int64]int64, ttl time.Duration) error {
+	pipe := c.client.TxPipeline()
+	for _, s := range scores {
+		pipe.ZAdd(ctx, key, redis.Z{Score: float64(s), Member: strconv.FormatInt(s, 10)})
+	}
+	pipe.Expire(ctx, key, ttl)
+	_, err := pipe.Exec(ctx)
+	return err
+}
+
+// ZRevRangeByScore 按分数逆序取区间（max/min 支持 "(score" 排他语法）
+func (c *RedisCache) ZRevRangeByScore(ctx context.Context, key string, max, min string, offset, count int64) ([]redis.Z, error) {
+	return c.client.ZRevRangeByScoreWithScores(ctx, key, &redis.ZRangeBy{
+		Max:    max,
+		Min:    min,
+		Offset: offset,
+		Count:  count,
+	}).Result()
+}
+
 func BlockedIDsKey(userID int64) string {
 	return fmt.Sprintf("block:blocked:%d", userID)
 }
 
-func FeedForYouKeyV2(userID int64 , limit int) string {
+func FeedForYouKeyV2(userID int64, limit int) string {
 	return fmt.Sprintf("feed:foryou:%d:%d", userID, limit)
 }
 
@@ -239,12 +271,12 @@ func ScoredPoolKey(userID int64) string {
 	return fmt.Sprintf("feed:scoredpool:v1:%d", userID)
 }
 
-func FeedForYouRawKey(userID int64 , limit int) string {
-	return fmt.Sprintf("feed:foryou:raw:%d:%d",userID , limit)
+func FeedForYouRawKey(userID int64, limit int) string {
+	return fmt.Sprintf("feed:foryou:raw:%d:%d", userID, limit)
 }
 
 func UserTypePrefKey(userID int64) string {
-	return fmt.Sprintf("feed:typepref:%d",userID)
+	return fmt.Sprintf("feed:typepref:%d", userID)
 }
 
 func NoteDetailRawKey(noteID int64) string {

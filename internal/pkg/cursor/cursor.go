@@ -11,7 +11,8 @@ import (
 )
 
 func EncodeFeedCursor(t time.Time, id int64) string {
-	return fmt.Sprintf("%d_%d", t.Unix(), id)
+	// 使用纳秒精度，避免 published_at 带毫秒/微秒时游标截断导致翻页漏数据
+	return fmt.Sprintf("%d_%d", t.UnixNano(), id)
 }
 func EncodeScoreCursor(score float64 , id int64) string {
 	return fmt.Sprintf("%.4f_%d" , score , id)
@@ -34,7 +35,7 @@ func ParseFeedCursor(s string) (*model.FeedCursor, error) {
 		return nil, err
 	}
 	return &model.FeedCursor{
-		PublishedAt: time.Unix(ts, 0),
+		PublishedAt: time.Unix(0, ts),
 		ID:          id,
 	}, nil
 }

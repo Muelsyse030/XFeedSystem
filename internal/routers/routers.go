@@ -2,6 +2,9 @@ package routers
 
 import (
 	"context"
+	"net/http"
+	"net/http/pprof"
+	"os"
 
 	"XFeedSystem/internal/cache"
 	"XFeedSystem/internal/handler"
@@ -17,7 +20,12 @@ import (
 
 func SetupRouter(db *gorm.DB, appCfg config.Config) *gin.Engine {
 
-	r := gin.Default()
+	// 生产环境不启用 gin 自带的每请求日志（与 LoggerMiddleware 重复，开销大）
+	r := gin.New()
+	r.Use(gin.Recovery())
+	if os.Getenv("ENABLE_PPROF") == "1" {
+		registerPprof(r)
+	}
 	r.Use(middleware.LoggerMiddleware())
 	redisCache := cache.NewRedisCache(appCfg.Redis.Addr, appCfg.Redis.Password, appCfg.Redis.DB)
 	searchRepo := repo.NewSearchRepo(appCfg.Meilisearch.Host, appCfg.Meilisearch.APIKey, appCfg.Meilisearch.Index)
@@ -143,4 +151,17 @@ func SetupRouter(db *gorm.DB, appCfg config.Config) *gin.Engine {
 		super.DELETE("/users/:id", adminHandler.DeleteUser) // 删除用户
 	}
 	return r
+}
+
+func registerPprof(r *gin.Engine) {
+	r.GET("/debug/pprof/", gin.WrapH(http.HandlerFunc(pprof.Index)))
+	r.GET("/debug/pprof/cmdline", gin.WrapH(http.HandlerFunc(pprof.Cmdline)))
+	r.GET("/debug/pprof/profile", gin.WrapH(http.HandlerFunc(pprof.Profile)))
+	r.GET("/debug/pprof/symbol", gin.WrapH(http.HandlerFunc(pprof.Symbol)))
+	r.GET("/debug/pprof/trace", gin.WrapH(http.HandlerFunc(pprof.Trace)))
+	r.GET("/debug/pprof/allocs", gin.WrapH(pprof.Handler("allocs")))
+	r.GET("/debug/pprof/block", gin.WrapH(pprof.Handler("block")))
+	r.GET("/debug/pprof/goroutine", gin.WrapH(pprof.Handler("goroutine")))
+	r.GET("/debug/pprof/heap", gin.WrapH(pprof.Handler("heap")))
+	r.GET("/debug/pprof/mutex", gin.WrapH(pprof.Handler("mutex")))
 }

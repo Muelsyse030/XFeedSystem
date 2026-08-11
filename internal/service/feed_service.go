@@ -7,26 +7,47 @@ import (
 	"XFeedSystem/internal/repo"
 	"context"
 	"encoding/json"
-	"time"
+	"math"
+	"strconv"
 	"sync"
-)
-var(
-	poolLockMu sync.Mutex
-	poolLocks = make(map[int64]*sync.Mutex)
-)
-const(
-	feedCacheTTL = 5 * time.Second
-	scoredPoolTTL = 10 * time.Second
+	"time"
 )
 
-type scoredPool struct {
-	GeneratedAt time.Time  `json:"generated_at"`
-	Items       []scoredItem `json:"items"`
+const (
+	feedEngineTTL = 60 * time.Second // 打分 ZSET 重建周期
+	feedScoreMult = 1_000_000        // 分数折叠因子：zsetScore = round(score*10000)*mult + id，消除同分并列
+)
+
+// scoredFeedItem 打分页元素
+type scoredFeedItem struct {
+	ID    int64
+	Score float64
 }
 
-type scoredItem struct {
-	ID int64 `json:"id"`
-	Score float64 `json:"score"`
+var (
+	engineLockMu sync.Mutex
+	engineLocks  = make(map[int64]*sync.Mutex)
+)
+
+func engineLockFor(userID int64) *sync.Mutex {
+	engineLockMu.Lock()
+	defer engineLockMu.Unlock()
+	if l, ok := engineLocks[userID]; ok {
+		return l
+	}
+	l := &sync.Mutex{}
+	engineLocks[userID] = l
+	return l
+}
+
+// foldScore 把 (分数, id) 折叠成唯一整数分数：score*10000*mult + id，ZSET 内严格有序无并列
+func foldScore(score float64, id int64) int64 {
+	return int64(math.Round(score*10000))*feedScoreMult + id
+}
+
+// unfoldScore 从折叠分数还原 (4位小数分数, id)
+func unfoldScore(z int64) (float64, int64) {
+	return float64(z/feedScoreMult) / 10000.0, z % feedScoreMult
 }
 
 type FeedListResponse struct {
@@ -47,49 +68,20 @@ func NewFeedService(r *repo.GormFeedRepo, u *repo.GormUserRepo, c *cache.RedisCa
 }
 
 func (s *FeedService) ListForYou(ctx context.Context, cursorStr string, limit int, currentUserID int64) (*FeedListResponse, error) {
-	// 1. 解析分数游标
+	// Feed 引擎：Redis ZSET 预计算打分，全部笔记参与排序，游标分页 O(log n)
 	cursorScore, cursorID, err := cursor.ParseScoreCursor(cursorStr)
 	if err != nil {
 		return nil, err
 	}
 
-	// 2. 首页查缓存（key 区分用户）
-	if cursorID == 0 && s.cache != nil {
-		var resp FeedListResponse
-		cacheKey := cache.FeedForYouKeyV2(currentUserID, limit)
-		if err := s.cache.GetJSON(ctx, cacheKey, &resp); err == nil {
-			return &resp, nil
-		}
-	}
-
-	// 3. 取打分池（Redis 缓存 10 秒，命中时不再全量拉取+打分+排序）
-	pool, err := s.getScoredPool(ctx, currentUserID)
+	page, err := s.getFeedPage(ctx, currentUserID, cursorScore, cursorID, limit)
 	if err != nil {
 		return nil, err
 	}
-
-	// 4. 按游标定位起始位置
-	startIdx := 0
-	if cursorID > 0 {
-		for i, it := range pool.Items {
-			if it.Score < cursorScore || (it.Score == cursorScore && it.ID < cursorID) {
-				startIdx = i + 1
-				break
-			}
-		}
-	}
-
-	// 5. 取 limit 条
-	endIdx := startIdx + limit
-	if endIdx > len(pool.Items) {
-		endIdx = len(pool.Items)
-	}
-	if startIdx >= len(pool.Items) {
+	if len(page) == 0 {
 		return &FeedListResponse{Items: []model.FeedItem{}, NextCursor: ""}, nil
 	}
-	page := pool.Items[startIdx:endIdx]
 
-	// 6. 按池内顺序取完整笔记并组装响应
 	ids := make([]int64, len(page))
 	for i, it := range page {
 		ids[i] = it.ID
@@ -108,22 +100,105 @@ func (s *FeedService) ListForYou(ctx context.Context, cursorStr string, limit in
 			ordered = append(ordered, n)
 		}
 	}
+	ordered = s.filterBlockedNotes(ctx, currentUserID, ordered)
+	if len(ordered) == 0 {
+		return &FeedListResponse{Items: []model.FeedItem{}, NextCursor: ""}, nil
+	}
 
 	resp, err := s.buildFeedResponse(ctx, ordered)
 	if err != nil {
 		return nil, err
 	}
 
-	// 7. 下一页游标 = 本页最后一条的 score + id
-	last := page[len(page)-1]
-	resp.NextCursor = cursor.EncodeScoreCursor(last.Score, last.ID)
+	// 下一页游标 = 本页最后一条（过滤后）的 score + id
+	lastNote := ordered[len(ordered)-1]
+	lastScore := page[len(page)-1].Score
+	for _, it := range page {
+		if it.ID == lastNote.ID {
+			lastScore = it.Score
+			break
+		}
+	}
+	resp.NextCursor = cursor.EncodeScoreCursor(lastScore, lastNote.ID)
+	return resp, nil
+}
 
-	// 8. 首页写缓存（TTL 与打分池对齐，避免首屏和翻页数据不一致）
-	if cursorID == 0 && s.cache != nil {
-		_ = s.cache.SetJSON(ctx, cache.FeedForYouKeyV2(currentUserID, limit), resp, scoredPoolTTL)
+// getFeedPage 从打分 ZSET 取一页（score 逆序，同分按 id 逆序）
+func (s *FeedService) getFeedPage(ctx context.Context, userID int64, cursorScore float64, cursorID int64, limit int) ([]scoredFeedItem, error) {
+	key := cache.FeedEngineKey(userID)
+	if err := s.ensureFeedEngine(ctx, userID, key); err != nil {
+		return nil, err
 	}
 
-	return resp, nil
+	max := "+inf"
+	if cursorID > 0 {
+		// 排他边界：严格小于 游标折叠分（即 score 更小，或同分 id 更小）
+		max = "(" + strconv.FormatInt(foldScore(cursorScore, cursorID), 10)
+	}
+	zs, err := s.cache.ZRevRangeByScore(ctx, key, max, "-inf", 0, int64(limit))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]scoredFeedItem, 0, len(zs))
+	for _, z := range zs {
+		member, ok := z.Member.(string)
+		if !ok {
+			continue
+		}
+		v, err := strconv.ParseInt(member, 10, 64)
+		if err != nil {
+			continue
+		}
+		score, id := unfoldScore(v)
+		out = append(out, scoredFeedItem{ID: id, Score: score})
+	}
+	return out, nil
+}
+
+// ensureFeedEngine 保证打分 ZSET 存在（不存在则重建，同用户单飞防惊群）
+func (s *FeedService) ensureFeedEngine(ctx context.Context, userID int64, key string) error {
+	ok, err := s.cache.Exists(ctx, key)
+	if err != nil {
+		return err
+	}
+	if ok {
+		return nil
+	}
+	lock := engineLockFor(userID)
+	lock.Lock()
+	defer lock.Unlock()
+	ok, _ = s.cache.Exists(ctx, key)
+	if ok {
+		return nil
+	}
+	return s.buildFeedEngine(ctx, userID, key)
+}
+
+// buildFeedEngine 全量重建打分 ZSET（全部已发布笔记，含用户关注/类型偏好加权）
+func (s *FeedService) buildFeedEngine(ctx context.Context, userID int64, key string) error {
+	notes, err := s.repo.ListAllPublished(ctx)
+	if err != nil {
+		return err
+	}
+
+	var followingSet map[int64]bool
+	var typePref map[int8]float64
+	if userID > 0 {
+		if ids, err := s.getFollowingIDs(ctx, userID); err == nil {
+			followingSet = make(map[int64]bool, len(ids))
+			for _, id := range ids {
+				followingSet[id] = true
+			}
+		}
+		typePref, _ = s.repo.GetUserTypePreference(ctx, userID)
+	}
+
+	now := time.Now()
+	scores := make(map[int64]int64, len(notes))
+	for _, n := range notes {
+		scores[n.ID] = foldScore(computeScore(n, now, followingSet, typePref), n.ID)
+	}
+	return s.cache.ZAddFeed(ctx, key, scores, feedEngineTTL)
 }
 
 func (s *FeedService) buildFeedResponse(ctx context.Context, notes []*model.Note) (*FeedListResponse, error) {
@@ -173,56 +248,6 @@ func (s *FeedService) buildFeedResponse(ctx context.Context, notes []*model.Note
 		Items:      items,
 		NextCursor: nextCursor,
 	}, nil
-}
-
-func (s *FeedService) getScoredPool(ctx context.Context, currentUserID int64) (*scoredPool, error) {
-	key := cache.ScoredPoolKey(currentUserID)
-	var pool scoredPool
-	if s.cache != nil {
-		if err := s.cache.GetJSON(ctx, key, &pool); err == nil && len(pool.Items) > 0 {
-			return &pool, nil
-		}
-	}
-	
-	lock := poolLockFor(currentUserID)
-	lock.Lock()
-	defer lock.Unlock()
-
-	if s.cache != nil {
-		if err := s.cache.GetJSON(ctx, key, &pool); err == nil && len(pool.Items) > 0 {
-			return &pool, nil
-		}
-	}
-	// 拉候选池（ListRecent 已优化为只查必要列）
-	notes, err := s.repo.ListRecent(ctx, PoolSize)
-	if err != nil {
-		return nil, err
-	}
-	notes = s.filterBlockedNotes(ctx, currentUserID, notes)
-
-	// 准备加权数据（仅登录用户）
-	var followingSet map[int64]bool
-	var typePref map[int8]float64
-	if currentUserID > 0 {
-		if ids, err := s.getFollowingIDs(ctx, currentUserID); err == nil {
-			followingSet = make(map[int64]bool, len(ids))
-			for _, id := range ids {
-				followingSet[id] = true
-			}
-		}
-		typePref = s.getTypePref(ctx, currentUserID)
-	}
-
-	// 打分排序并写入缓存
-	scored := scoreAndSort(notes, time.Now(), followingSet, typePref)
-	pool = scoredPool{GeneratedAt: time.Now(), Items: make([]scoredItem, len(scored))}
-	for i, sn := range scored {
-		pool.Items[i] = scoredItem{ID: sn.Note.ID, Score: sn.Score}
-	}
-	if s.cache != nil && len(pool.Items) > 0 {
-		_ = s.cache.SetJSON(ctx, key, &pool, scoredPoolTTL)
-	}
-	return &pool, nil
 }
 
 func (s *FeedService) ListFollowing(ctx context.Context, userID int64, cursorStr string, limit int) (*FeedListResponse, error) {
@@ -293,6 +318,7 @@ func (s *FeedService) batchGetUsers(ctx context.Context, ids []int64) []*model.U
 				}
 				var u model.User
 				if json.Unmarshal([]byte(val), &u) == nil {
+					u.PasswordHash = ""
 					result = append(result, &u)
 				} else {
 					missIDs = append(missIDs, ids[i])
@@ -386,28 +412,4 @@ func (s *FeedService) filterBlockedNotes(ctx context.Context, userID int64, note
 		}
 	}
 	return filtered
-}
-
-func (s *FeedService) getTypePref(ctx context.Context, userID int64) map[int8]float64 {
-	key := cache.UserTypePrefKey(userID)
-	var pref map[int8]float64
-	if s.cache != nil && s.cache.GetJSON(ctx, key, &pref) == nil {
-		return pref
-	}
-	pref, _ = s.repo.GetUserTypePreference(ctx, userID)
-	if s.cache != nil {
-		_ = s.cache.SetJSON(ctx, key, pref, 10*time.Minute)
-	}
-	return pref
-}
-
-func poolLockFor(userID int64) *sync.Mutex {
-	poolLockMu.Lock()
-	defer poolLockMu.Unlock()
-	if l, ok := poolLocks[userID]; ok {
-		return l
-	}
-	l := &sync.Mutex{}
-	poolLocks[userID] = l
-	return l
 }

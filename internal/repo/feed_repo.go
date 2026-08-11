@@ -3,6 +3,7 @@ package repo
 import (
 	"XFeedSystem/internal/model"
 	"context"
+	"time"
 
 	"gorm.io/gorm"
 )
@@ -21,7 +22,7 @@ type FeedRepo interface {
 	ListForYou(ctx context.Context, cursor *model.FeedCursor, limit int) ([]*model.Note, error)
 	ListFollowing(ctx context.Context, followIDs []int64, cursor *model.FeedCursor, limit int) ([]*model.Note, error)
 	GetByIDs(ctx context.Context, ids []int64) ([]*model.Note, error)
-	ListRecent(ctx context.Context, limit int)([]*model.Note , error)
+	ListRecent(ctx context.Context, limit int) ([]*model.Note, error)
 	GetUserTypePreference(ctx context.Context, userID int64) (map[int8]float64, error)
 }
 
@@ -103,14 +104,38 @@ func (r *GormFeedRepo) ListRecent(ctx context.Context, limit int) ([]*model.Note
 	return notes, err
 }
 
-func (r *GormFeedRepo) GetUserTypePreference(ctx context.Context , userID int64) (map[int8]float64 , error){
+// ListSince 返回最近 since 时间点之后发布的笔记（时间窗口池，替代固定 200 条硬上限）
+func (r *GormFeedRepo) ListSince(ctx context.Context, since time.Time, limit int) ([]*model.Note, error) {
+	var notes []*model.Note
+	err := r.db.WithContext(ctx).
+		Model(&model.Note{}).
+		Select("id", "author_id", "title", "type", "like_count", "favorite_count", "comment_count", "published_at").
+		Where("status = ? AND published_at >= ?", model.NoteStatusPublished, since).
+		Order("published_at DESC").
+		Limit(limit).
+		Find(&notes).Error
+	return notes, err
+}
+
+// ListAllPublished 返回全部已发布笔记（feed 引擎重建打分 ZSET 用，只查打分所需列）
+func (r *GormFeedRepo) ListAllPublished(ctx context.Context) ([]*model.Note, error) {
+	var notes []*model.Note
+	err := r.db.WithContext(ctx).
+		Model(&model.Note{}).
+		Select("id", "author_id", "title", "type", "like_count", "favorite_count", "comment_count", "published_at").
+		Where("status = ?", model.NoteStatusPublished).
+		Find(&notes).Error
+	return notes, err
+}
+
+func (r *GormFeedRepo) GetUserTypePreference(ctx context.Context, userID int64) (map[int8]float64, error) {
 	type countResult struct {
 		Type  int8
 		Count int64
 	}
 	var results []countResult
 
-		err := r.db.WithContext(ctx).Raw(`
+	err := r.db.WithContext(ctx).Raw(`
         SELECT n.type, COUNT(*) as count FROM (
             (SELECT note_id FROM note_likes WHERE user_id = ? LIMIT 100)
             UNION ALL
@@ -123,16 +148,16 @@ func (r *GormFeedRepo) GetUserTypePreference(ctx context.Context , userID int64)
     `, userID, userID, userID).Scan(&results).Error
 
 	if err != nil || len(results) == 0 {
-		return nil , err
+		return nil, err
 	}
-	
+
 	var total float64
-	for _,r:= range results {
+	for _, r := range results {
 		total += float64(r.Count)
 	}
-	pref := make(map[int8]float64 , len(results))
-	for _,r := range results {
+	pref := make(map[int8]float64, len(results))
+	for _, r := range results {
 		pref[r.Type] = float64(r.Count) / total
 	}
-	return pref , nil
+	return pref, nil
 }
