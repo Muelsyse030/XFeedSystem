@@ -10,7 +10,20 @@ import (
 	"time"
 )
 
-const feedCacheTTL = 5 * time.Second
+const(
+	feedCacheTTL = 5 * time.Second
+	scoredPoolTTL = 10 * time.Second
+)
+
+type scoredPool struct {
+	GeneratedAt time.Time  `json:"generated_at"`
+	Items       []scoredItem `json:"items"`
+}
+
+type scoredItem struct {
+	ID int64 `json:"id"`
+	Score float64 `json:"score"`
+}
 
 type FeedListResponse struct {
 	Items      []model.FeedItem `json:"items"`
@@ -30,87 +43,83 @@ func NewFeedService(r *repo.GormFeedRepo, u *repo.GormUserRepo, c *cache.RedisCa
 }
 
 func (s *FeedService) ListForYou(ctx context.Context, cursorStr string, limit int, currentUserID int64) (*FeedListResponse, error) {
-	 // 1. 解析分数游标
-    cursorScore, cursorID, err := cursor.ParseScoreCursor(cursorStr)
-    if err != nil {
-        return nil, err
-    }
+	// 1. 解析分数游标
+	cursorScore, cursorID, err := cursor.ParseScoreCursor(cursorStr)
+	if err != nil {
+		return nil, err
+	}
 
-    // 2. 首页查缓存（key 要区分用户，因为不同用户看到的内容不同）
-    if cursorID == 0 && s.cache != nil {
-        var resp FeedListResponse
-        cacheKey := cache.FeedForYouKeyV2(currentUserID, limit) // 新 key，区分用户
-        if err := s.cache.GetJSON(ctx, cacheKey, &resp); err == nil {
-            return &resp, nil
-        }
-    }
+	// 2. 首页查缓存（key 区分用户）
+	if cursorID == 0 && s.cache != nil {
+		var resp FeedListResponse
+		cacheKey := cache.FeedForYouKeyV2(currentUserID, limit)
+		if err := s.cache.GetJSON(ctx, cacheKey, &resp); err == nil {
+			return &resp, nil
+		}
+	}
 
-    // 3. 拉候选池
-    notes, err := s.repo.ListRecent(ctx, PoolSize)
-    if err != nil {
-        return nil, err
-    }
-    notes = s.filterBlockedNotes(ctx, currentUserID, notes)
+	// 3. 取打分池（Redis 缓存 10 秒，命中时不再全量拉取+打分+排序）
+	pool, err := s.getScoredPool(ctx, currentUserID)
+	if err != nil {
+		return nil, err
+	}
 
-    // 4. 准备加权数据（仅登录用户）
-    var followingSet map[int64]bool
-    var typePref map[int8]float64
-    if currentUserID > 0 {
-        if ids, err := s.getFollowingIDs(ctx, currentUserID); err == nil {
-            followingSet = make(map[int64]bool, len(ids))
-            for _, id := range ids {
-                followingSet[id] = true
-            }
-        }
-        typePref, _ = s.repo.GetUserTypePreference(ctx, currentUserID)
-    }
+	// 4. 按游标定位起始位置
+	startIdx := 0
+	if cursorID > 0 {
+		for i, it := range pool.Items {
+			if it.Score < cursorScore || (it.Score == cursorScore && it.ID < cursorID) {
+				startIdx = i + 1
+				break
+			}
+		}
+	}
 
-    // 5. 打分排序
-    scored := scoreAndSort(notes, time.Now(), followingSet, typePref)
+	// 5. 取 limit 条
+	endIdx := startIdx + limit
+	if endIdx > len(pool.Items) {
+		endIdx = len(pool.Items)
+	}
+	if startIdx >= len(pool.Items) {
+		return &FeedListResponse{Items: []model.FeedItem{}, NextCursor: ""}, nil
+	}
+	page := pool.Items[startIdx:endIdx]
 
-    // 6. 游标分页
-    // 如果传了 cursor，找到游标位置，从后面开始取
-    startIdx := 0
-    if cursorID > 0 {
-        for i, sn := range scored {
-            if sn.Score < cursorScore || (sn.Score == cursorScore && sn.Note.ID < cursorID) {
-                startIdx = i + 1
-                break
-            }
-        }
-    }
+	// 6. 按池内顺序取完整笔记并组装响应
+	ids := make([]int64, len(page))
+	for i, it := range page {
+		ids[i] = it.ID
+	}
+	notes, err := s.repo.GetByIDs(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	byID := make(map[int64]*model.Note, len(notes))
+	for _, n := range notes {
+		byID[n.ID] = n
+	}
+	ordered := make([]*model.Note, 0, len(ids))
+	for _, id := range ids {
+		if n, ok := byID[id]; ok {
+			ordered = append(ordered, n)
+		}
+	}
 
-    // 7. 取 limit 条
-    endIdx := startIdx + limit
-    if endIdx > len(scored) {
-        endIdx = len(scored)
-    }
-    page := scored[startIdx:endIdx]
-    if len(page) == 0 {
-        return &FeedListResponse{Items: []model.FeedItem{}, NextCursor: ""}, nil
-    }
+	resp, err := s.buildFeedResponse(ctx, ordered)
+	if err != nil {
+		return nil, err
+	}
 
-    // 8. 组装响应（复用现有 buildFeedResponse 逻辑，但输入是 []*model.Note）
-    pageNotes := make([]*model.Note, len(page))
-    for i, sn := range page {
-        pageNotes[i] = sn.Note
-    }
+	// 7. 下一页游标 = 本页最后一条的 score + id
+	last := page[len(page)-1]
+	resp.NextCursor = cursor.EncodeScoreCursor(last.Score, last.ID)
 
-    resp, err := s.buildFeedResponse(ctx, pageNotes)
-    if err != nil {
-        return nil, err
-    }
+	// 8. 首页写缓存（TTL 与打分池对齐，避免首屏和翻页数据不一致）
+	if cursorID == 0 && s.cache != nil {
+		_ = s.cache.SetJSON(ctx, cache.FeedForYouKeyV2(currentUserID, limit), resp, scoredPoolTTL)
+	}
 
-    // 9. 下一页游标 = 本页最后一条的 score + id
-    last := page[len(page)-1]
-    resp.NextCursor = cursor.EncodeScoreCursor(last.Score, last.Note.ID)
-
-    // 10. 首页写缓存
-    if cursorID == 0 && s.cache != nil {
-        _ = s.cache.SetJSON(ctx, cache.FeedForYouKeyV2(currentUserID, limit), resp, 5*time.Minute)
-    }
-
-    return resp, nil
+	return resp, nil
 }
 
 func (s *FeedService) buildFeedResponse(ctx context.Context, notes []*model.Note) (*FeedListResponse, error) {
@@ -160,6 +169,47 @@ func (s *FeedService) buildFeedResponse(ctx context.Context, notes []*model.Note
 		Items:      items,
 		NextCursor: nextCursor,
 	}, nil
+}
+
+func (s *FeedService) getScoredPool(ctx context.Context, currentUserID int64) (*scoredPool, error) {
+	key := cache.ScoredPoolKey(currentUserID)
+	var pool scoredPool
+	if s.cache != nil {
+		if err := s.cache.GetJSON(ctx, key, &pool); err == nil && len(pool.Items) > 0 {
+			return &pool, nil
+		}
+	}
+
+	// 拉候选池（ListRecent 已优化为只查必要列）
+	notes, err := s.repo.ListRecent(ctx, PoolSize)
+	if err != nil {
+		return nil, err
+	}
+	notes = s.filterBlockedNotes(ctx, currentUserID, notes)
+
+	// 准备加权数据（仅登录用户）
+	var followingSet map[int64]bool
+	var typePref map[int8]float64
+	if currentUserID > 0 {
+		if ids, err := s.getFollowingIDs(ctx, currentUserID); err == nil {
+			followingSet = make(map[int64]bool, len(ids))
+			for _, id := range ids {
+				followingSet[id] = true
+			}
+		}
+		typePref, _ = s.repo.GetUserTypePreference(ctx, currentUserID)
+	}
+
+	// 打分排序并写入缓存
+	scored := scoreAndSort(notes, time.Now(), followingSet, typePref)
+	pool = scoredPool{GeneratedAt: time.Now(), Items: make([]scoredItem, len(scored))}
+	for i, sn := range scored {
+		pool.Items[i] = scoredItem{ID: sn.Note.ID, Score: sn.Score}
+	}
+	if s.cache != nil && len(pool.Items) > 0 {
+		_ = s.cache.SetJSON(ctx, key, &pool, scoredPoolTTL)
+	}
+	return &pool, nil
 }
 
 func (s *FeedService) ListFollowing(ctx context.Context, userID int64, cursorStr string, limit int) (*FeedListResponse, error) {

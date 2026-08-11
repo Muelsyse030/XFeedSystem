@@ -234,3 +234,7 @@ func BlockedIDsKey(userID int64) string {
 func FeedForYouKeyV2(userID int64 , limit int) string {
 	return fmt.Sprintf("feed:foryou:%d:%d", userID, limit)
 }
+
+func ScoredPoolKey(userID int64) string {
+	return fmt.Sprintf("feed:scoredpool:v1:%d", userID)
+}

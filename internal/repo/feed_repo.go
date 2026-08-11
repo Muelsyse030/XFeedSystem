@@ -90,16 +90,17 @@ func (r *GormFeedRepo) GetByIDs(ctx context.Context, ids []int64) ([]*model.Note
 	return notes, err
 }
 
-func (r *GormFeedRepo) ListRecent(ctx context.Context, limit int)([]*model.Note , error){
+func (r *GormFeedRepo) ListRecent(ctx context.Context, limit int) ([]*model.Note, error) {
 	var notes []*model.Note
 	err := r.db.WithContext(ctx).
 		Model(&model.Note{}).
-		Where("status = ?",model.NoteStatusPublished).
+		Select("id", "author_id", "title", "type", "like_count", "favorite_count", "comment_count", "published_at").
+		Where("status = ?", model.NoteStatusPublished).
 		Order("published_at DESC").
 		Limit(limit).
 		Find(&notes).Error
-	return notes , err
-} 
+	return notes, err
+}
 
 func (r *GormFeedRepo) GetUserTypePreference(ctx context.Context , userID int64) (map[int8]float64 , error){
 	type countResult struct {
