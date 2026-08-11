@@ -1,11 +1,14 @@
 package handler
 
 import (
+	"XFeedSystem/internal/cache"
 	"XFeedSystem/internal/middleware"
 	"XFeedSystem/internal/service"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -13,6 +16,7 @@ import (
 type UserHandler struct {
 	userService *service.UserService
 	jwtService  *middleware.JWTService
+	cache       *cache.RedisCache
 }
 type RegisterRequest struct {
 	Username        string `json:"username"`
@@ -32,11 +36,8 @@ type UpdataUserRequest struct {
 	Bio       string `json:"bio"`
 }
 
-func NewUserHandler(userService *service.UserService, jwtService *middleware.JWTService) *UserHandler {
-	return &UserHandler{
-		userService: userService,
-		jwtService:  jwtService,
-	}
+func NewUserHandler(userService *service.UserService, jwtService *middleware.JWTService, cache *cache.RedisCache) *UserHandler {
+	return &UserHandler{userService: userService, jwtService: jwtService, cache: cache}
 }
 
 func (h *UserHandler) Register(c *gin.Context) {
@@ -121,6 +122,12 @@ func (h *UserHandler) GetProfile(c *gin.Context) {
 		})
 		return
 	}
+	if h.cache != nil {
+		if body, err := h.cache.Get(c.Request.Context(), cache.UserProfileRawKey(uid)); err == nil {
+			c.Data(http.StatusOK, "application/json; charset=utf-8", []byte(body))
+			return
+		}
+	}
 	user, err := h.userService.GetProfile(uid)
 	if err != nil {
 		if errors.Is(err, service.ErrUserNotFound) {
@@ -136,7 +143,7 @@ func (h *UserHandler) GetProfile(c *gin.Context) {
 		})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{
+	resp := gin.H{
 		"code":    0,
 		"message": "ok",
 		"data": gin.H{
@@ -147,7 +154,16 @@ func (h *UserHandler) GetProfile(c *gin.Context) {
 			"created_at": user.CreatedAt,
 			"updated_at": user.UpdatedAt,
 		},
-	})
+	}
+	body, err := json.Marshal(resp)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 4004, "message": err.Error()})
+		return
+	}
+	if h.cache != nil {
+		_ = h.cache.Set(c.Request.Context(), cache.UserProfileRawKey(uid), string(body), 60*time.Second)
+	}
+	c.Data(http.StatusOK, "application/json; charset=utf-8", body)
 }
 
 func (h *UserHandler) Follow(c *gin.Context) {

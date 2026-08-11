@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"XFeedSystem/internal/cache"
 	"XFeedSystem/internal/model"
 	"XFeedSystem/internal/repo"
 	"XFeedSystem/internal/service"
@@ -19,6 +20,7 @@ import (
 type NoteHandler struct {
 	noteService *service.NoteService
 	userRepo    *repo.GormUserRepo
+	cache       *cache.RedisCache
 }
 type CreateNoteRequest struct {
 	Title   string   `json:"title"`
@@ -35,11 +37,8 @@ type NoteResponse struct {
 	CreatedAt   time.Time `json:"created_at"`
 }
 
-func NewNoteHandler(noteService *service.NoteService, userRepo *repo.GormUserRepo) *NoteHandler {
-	return &NoteHandler{
-		noteService: noteService,
-		userRepo:    userRepo,
-	}
+func NewNoteHandler(noteService *service.NoteService, userRepo *repo.GormUserRepo, cache *cache.RedisCache) *NoteHandler {
+	return &NoteHandler{noteService: noteService, userRepo: userRepo, cache: cache}
 }
 
 func (h *NoteHandler) Create(c *gin.Context) {
@@ -147,6 +146,18 @@ func (h *NoteHandler) Detail(c *gin.Context) {
 		})
 		return
 	}
+
+	userID, _ := getUserIDFromContext(c)
+
+	// 匿名详情：命中原始字节缓存直接返回，零序列化
+	if userID == 0 && h.cache != nil {
+		cacheKey := cache.NoteDetailRawKey(id)
+		if body, err := h.cache.Get(c.Request.Context(), cacheKey); err == nil {
+			c.Data(http.StatusOK, "application/json; charset=utf-8", []byte(body))
+			return
+		}
+	}
+
 	note, err := h.noteService.GetByID(c.Request.Context(), id)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -158,7 +169,7 @@ func (h *NoteHandler) Detail(c *gin.Context) {
 
 	isLiked := false
 	isFavorited := false
-	if userID, ok := getUserIDFromContext(c); ok {
+	if userID > 0 {
 		if liked, err := h.noteService.IsLiked(c.Request.Context(), note.ID, userID); err == nil {
 			isLiked = liked
 		}
@@ -167,7 +178,7 @@ func (h *NoteHandler) Detail(c *gin.Context) {
 		}
 	}
 
-	c.JSON(http.StatusOK, gin.H{
+	resp := gin.H{
 		"code":    0,
 		"message": "ok",
 		"data": gin.H{
@@ -184,7 +195,16 @@ func (h *NoteHandler) Detail(c *gin.Context) {
 			"is_liked":       isLiked,
 			"is_favorited":   isFavorited,
 		},
-	})
+	}
+	body, err := json.Marshal(resp)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 5004, "message": err.Error()})
+		return
+	}
+	if userID == 0 && h.cache != nil {
+		_ = h.cache.Set(c.Request.Context(), cache.NoteDetailRawKey(id), string(body), 30*time.Second)
+	}
+	c.Data(http.StatusOK, "application/json; charset=utf-8", body)
 }
 
 func (h *NoteHandler) Delete(c *gin.Context) {

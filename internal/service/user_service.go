@@ -176,6 +176,7 @@ func (s *UserService) Updata(ctx context.Context, userID int64, avatarURL string
 	}
 	if s.cache != nil {
 		_ = s.cache.Delete(ctx, cache.UserKey(userID))
+		_ = s.cache.Delete(ctx, cache.UserProfileRawKey(userID))
 	}
 	return nil
 }

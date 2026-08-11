@@ -246,3 +246,15 @@ func FeedForYouRawKey(userID int64 , limit int) string {
 func UserTypePrefKey(userID int64) string {
 	return fmt.Sprintf("feed:typepref:%d",userID)
 }
+
+func NoteDetailRawKey(noteID int64) string {
+	return fmt.Sprintf("note:detail:raw:%d", noteID)
+}
+
+func UserProfileRawKey(userID int64) string {
+	return fmt.Sprintf("user:profile:raw:%d", userID)
+}
+
+func FeedPageRawKey(userID int64, limit int, cursor string) string {
+	return fmt.Sprintf("feed:page:raw:%d:%d:%s", userID, limit, cursor)
+}

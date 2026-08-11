@@ -166,6 +166,7 @@ func (s *NoteService) Like(ctx context.Context, noteID, userID int64) (bool, err
 	created, err := s.repo.Like(ctx, noteID, userID)
 	if err == nil {
 		_ = s.cache.Delete(ctx, cache.NoteKey(noteID))
+		_ = s.cache.Delete(ctx, cache.NoteDetailRawKey(noteID))
 	}
 	if created && s.notifSvc != nil {
 		note, _ := s.repo.GetByID(ctx, noteID)
@@ -192,6 +193,7 @@ func (s *NoteService) Unlike(ctx context.Context, noteID, userID int64) (bool, e
 	deleted, err := s.repo.Unlike(ctx, noteID, userID)
 	if err == nil {
 		_ = s.cache.Delete(ctx, cache.NoteKey(noteID))
+		_ = s.cache.Delete(ctx, cache.NoteDetailRawKey(noteID))
 	}
 	return deleted, err
 }
@@ -213,6 +215,7 @@ func (s *NoteService) Favorite(ctx context.Context, noteID, userID int64) (bool,
 	created, err := s.repo.Favorite(ctx, noteID, userID)
 	if err == nil {
 		_ = s.cache.Delete(ctx, cache.NoteKey(noteID))
+		_ = s.cache.Delete(ctx, cache.NoteDetailRawKey(noteID))
 	}
 	if created && s.notifSvc != nil {
 		note, _ := s.repo.GetByID(ctx, noteID)
@@ -239,6 +242,7 @@ func (s *NoteService) Unfavorite(ctx context.Context, noteID, userID int64) (boo
 	deleted, err := s.repo.Unfavorite(ctx, noteID, userID)
 	if err == nil {
 		_ = s.cache.Delete(ctx, cache.NoteKey(noteID))
+		_ = s.cache.Delete(ctx, cache.NoteDetailRawKey(noteID))
 	}
 	return deleted, err
 }
@@ -371,6 +375,7 @@ func (s *NoteService) Updata(ctx context.Context, noteID, authorID int64, title,
 		return err
 	}
 	_ = s.cache.Delete(ctx, cache.NoteKey(noteID))
+	_ = s.cache.Delete(ctx, cache.NoteDetailRawKey(noteID))
 	_ = s.cache.Delete(ctx,
 		cache.NoteKey(noteID),
 		cache.UserNotesKey(authorID, 10),

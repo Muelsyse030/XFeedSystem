@@ -42,10 +42,10 @@ func SetupRouter(db *gorm.DB, appCfg config.Config) *gin.Engine {
 	adminHandler := handler.NewAdminHandler(adminService)
 
 	userService := service.NewUserService(userRepo, redisCache, notifService, blockService)
-	userHandler := handler.NewUserHandler(userService, jwtService)
+	userHandler := handler.NewUserHandler(userService, jwtService, redisCache)
 	noteRepo := repo.NewGormNoteRepo(db)
 	noteService := service.NewNoteService(noteRepo, redisCache, searchRepo, notifService, blockService)
-	noteHandler := handler.NewNoteHandler(noteService, userRepo)
+	noteHandler := handler.NewNoteHandler(noteService, userRepo, redisCache)
 	feedRepo := repo.NewGormFeedRepo(db)
 	feedService := service.NewFeedService(feedRepo, userRepo, redisCache, searchRepo, blockService)
 	feedHandler := handler.NewFeedHandler(feedService, redisCache)

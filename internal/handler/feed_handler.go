@@ -43,9 +43,14 @@ func (h *FeedHandler) List(c *gin.Context) {
 
 	switch feedType {
 	case "foryou":
-		// 首页（无游标）命中原始字节缓存时零序列化直接返回
-		if cursorStr == "" && h.cache != nil {
-			cacheKey := cache.FeedForYouRawKey(currentUserID, limit)
+		// 首页/翻页：命中原始字节缓存时零序列化直接返回
+		cacheKey := ""
+		if h.cache != nil {
+			if cursorStr == "" {
+				cacheKey = cache.FeedForYouRawKey(currentUserID, limit)
+			} else {
+				cacheKey = cache.FeedPageRawKey(currentUserID, limit, cursorStr)
+			}
 			if body, err := h.cache.Get(c.Request.Context(), cacheKey); err == nil {
 				c.Data(http.StatusOK, "application/json; charset=utf-8", []byte(body))
 				return
@@ -70,8 +75,8 @@ func (h *FeedHandler) List(c *gin.Context) {
 			})
 			return
 		}
-		if cursorStr == "" && h.cache != nil {
-			_ = h.cache.Set(c.Request.Context(), cache.FeedForYouRawKey(currentUserID, limit), string(body), 10*time.Second)
+		if h.cache != nil && cacheKey != "" {
+			_ = h.cache.Set(c.Request.Context(), cacheKey, string(body), 10*time.Second)
 		}
 		c.Data(http.StatusOK, "application/json; charset=utf-8", body)
 		return
