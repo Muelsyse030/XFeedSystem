@@ -7,9 +7,9 @@ import (
 	"XFeedSystem/internal/handler"
 	"XFeedSystem/internal/middleware"
 	"XFeedSystem/internal/pkg/config"
+	"XFeedSystem/internal/pkg/logger"
 	"XFeedSystem/internal/repo"
 	"XFeedSystem/internal/service"
-	"XFeedSystem/internal/pkg/logger"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -45,7 +45,7 @@ func SetupRouter(db *gorm.DB, appCfg config.Config) *gin.Engine {
 	userHandler := handler.NewUserHandler(userService, jwtService)
 	noteRepo := repo.NewGormNoteRepo(db)
 	noteService := service.NewNoteService(noteRepo, redisCache, searchRepo, notifService, blockService)
-	noteHandler := handler.NewNoteHandler(noteService)
+	noteHandler := handler.NewNoteHandler(noteService, userRepo)
 	feedRepo := repo.NewGormFeedRepo(db)
 	feedService := service.NewFeedService(feedRepo, userRepo, redisCache, searchRepo, blockService)
 	feedHandler := handler.NewFeedHandler(feedService)
@@ -77,15 +77,14 @@ func SetupRouter(db *gorm.DB, appCfg config.Config) *gin.Engine {
 			return
 		}
 		if !searchRepo.IsHealthy(c.Request.Context()) {
-        c.JSON(503, gin.H{"status": "not ready", "reason": "meilisearch unreachable"})
-        return
-    	}
+			c.JSON(503, gin.H{"status": "not ready", "reason": "meilisearch unreachable"})
+			return
+		}
 		c.JSON(200, gin.H{"status": "ready"})
 	})
 
 	r.POST("/register", userHandler.Register)
 	r.POST("/login", userHandler.Login)
-	
 
 	r.GET("/notes/:id", jwtService.OptionalJWTAuth(), noteHandler.Detail)
 	r.GET("/users/:id/notes", noteHandler.ListByUser)

@@ -108,13 +108,13 @@ func (r *GormFeedRepo) GetUserTypePreference(ctx context.Context , userID int64)
 	}
 	var results []countResult
 
-	err := r.db.WithContext(ctx).Raw(`
+		err := r.db.WithContext(ctx).Raw(`
         SELECT n.type, COUNT(*) as count FROM (
-            SELECT note_id FROM note_likes WHERE user_id = ? LIMIT 100
+            (SELECT note_id FROM note_likes WHERE user_id = ? LIMIT 100)
             UNION ALL
-            SELECT note_id FROM note_favorites WHERE user_id = ? LIMIT 100
+            (SELECT note_id FROM note_favorites WHERE user_id = ? LIMIT 100)
             UNION ALL
-            SELECT note_id FROM note_comments WHERE user_id = ? LIMIT 100
+            (SELECT note_id FROM note_comments WHERE user_id = ? LIMIT 100)
         ) AS interactions
         JOIN notes n ON n.id = interactions.note_id
         GROUP BY n.type

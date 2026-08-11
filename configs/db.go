@@ -1,6 +1,8 @@
 package configs
 
 import (
+	"time"
+
 	"XFeedSystem/internal/model"
 
 	"gorm.io/driver/mysql"
@@ -12,7 +14,13 @@ func InitDB(dsn string) *gorm.DB {
 	if err != nil {
 		panic("无法连接到数据库: " + err.Error())
 	}
-
+	sqlDB,err := db.DB()
+	if err != nil {
+		panic("获取底层sql.DB失败:"+err.Error())
+	}
+	sqlDB.SetMaxOpenConns(100)
+	sqlDB.SetMaxIdleConns(20)
+	sqlDB.SetConnMaxLifetime(5 * time.Minute)
 	if err := db.AutoMigrate(
 		&model.User{},
 		&model.Note{},

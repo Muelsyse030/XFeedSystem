@@ -2,6 +2,7 @@ package handler
 
 import (
 	"XFeedSystem/internal/model"
+	"XFeedSystem/internal/repo"
 	"XFeedSystem/internal/service"
 	"context"
 	"encoding/json"
@@ -17,6 +18,7 @@ import (
 
 type NoteHandler struct {
 	noteService *service.NoteService
+	userRepo    *repo.GormUserRepo
 }
 type CreateNoteRequest struct {
 	Title   string   `json:"title"`
@@ -33,9 +35,10 @@ type NoteResponse struct {
 	CreatedAt   time.Time `json:"created_at"`
 }
 
-func NewNoteHandler(noteService *service.NoteService) *NoteHandler {
+func NewNoteHandler(noteService *service.NoteService, userRepo *repo.GormUserRepo) *NoteHandler {
 	return &NoteHandler{
 		noteService: noteService,
+		userRepo:    userRepo,
 	}
 }
 
@@ -583,8 +586,10 @@ func (h *NoteHandler) ListComments(c *gin.Context) {
 		nextCursor = comments[len(comments)-1].ID
 	}
 
-	resp := make([]gin.H, 0, len(comments))
+	repliesByComment := make(map[int64][]*model.NoteComment, len(comments))
+	userIDs := make(map[int64]struct{})
 	for _, cm := range comments {
+		userIDs[cm.UserID] = struct{}{}
 		replies, err := h.noteService.ListRepliesByParentID(c.Request.Context(), noteID, cm.ID, 50)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
@@ -593,9 +598,36 @@ func (h *NoteHandler) ListComments(c *gin.Context) {
 			})
 			return
 		}
-		replyResp := make([]gin.H, 0, len(replies))
+		repliesByComment[cm.ID] = replies
 		for _, rp := range replies {
-			replyResp = append(replyResp, gin.H{
+			userIDs[rp.UserID] = struct{}{}
+		}
+	}
+
+	userMap := make(map[int64]*model.User, len(userIDs))
+	if len(userIDs) > 0 {
+		idList := make([]int64, 0, len(userIDs))
+		for id := range userIDs {
+			idList = append(idList, id)
+		}
+		users, err := h.userRepo.GetByIDs(idList)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"code":    5002,
+				"message": "list comments failed",
+			})
+			return
+		}
+		for _, u := range users {
+			userMap[u.ID] = u
+		}
+	}
+
+	resp := make([]gin.H, 0, len(comments))
+	for _, cm := range comments {
+		replyResp := make([]gin.H, 0, len(repliesByComment[cm.ID]))
+		for _, rp := range repliesByComment[cm.ID] {
+			reply := gin.H{
 				"id":               rp.ID,
 				"note_id":          rp.NoteID,
 				"user_id":          rp.UserID,
@@ -603,16 +635,32 @@ func (h *NoteHandler) ListComments(c *gin.Context) {
 				"reply_to_user_id": rp.ReplyToUserID,
 				"content":          rp.Content,
 				"created_at":       rp.CreatedAt,
-			})
+			}
+			if u, ok := userMap[rp.UserID]; ok {
+				reply["user"] = gin.H{
+					"id":         u.ID,
+					"username":   u.Username,
+					"avatar_url": u.AvatarURL,
+				}
+			}
+			replyResp = append(replyResp, reply)
 		}
-		resp = append(resp, gin.H{
+		comment := gin.H{
 			"id":         cm.ID,
 			"note_id":    cm.NoteID,
 			"user_id":    cm.UserID,
 			"content":    cm.Content,
 			"created_at": cm.CreatedAt,
 			"replies":    replyResp,
-		})
+		}
+		if u, ok := userMap[cm.UserID]; ok {
+			comment["user"] = gin.H{
+				"id":         u.ID,
+				"username":   u.Username,
+				"avatar_url": u.AvatarURL,
+			}
+		}
+		resp = append(resp, comment)
 	}
 
 	c.JSON(http.StatusOK, gin.H{

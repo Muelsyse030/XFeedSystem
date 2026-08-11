@@ -106,6 +106,7 @@ func (h *UserHandler) Me(c *gin.Context) {
 			"bio":        user.Bio,
 			"created_at": user.CreatedAt,
 			"updated_at": user.UpdatedAt,
+			"role":       user.Role,
 		},
 	})
 }
