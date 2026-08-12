@@ -233,6 +233,29 @@ func FeedEngineKey(userID int64) string {
 	return fmt.Sprintf("feed:engine:v1:%d", userID)
 }
 
+func TopicHotKey() string {
+	return "topics:hot"
+}
+
+func TopicFeedRawKey(topicID int64, limit int, cursor string) string {
+	return fmt.Sprintf("topic:feed:raw:%d:%d:%s", topicID, limit, cursor)
+}
+
+// ZAddAll 批量写入 ZSET（member -> score）并设置 TTL
+func (c *RedisCache) ZAddAll(ctx context.Context, key string, scores map[string]float64, ttl time.Duration) error {
+	pipe := c.client.TxPipeline()
+	for m, s := range scores {
+		pipe.ZAdd(ctx, key, redis.Z{Score: s, Member: m})
+	}
+	pipe.Expire(ctx, key, ttl)
+	_, err := pipe.Exec(ctx)
+	return err
+}
+
+func (c *RedisCache) ZIncrBy(ctx context.Context, key, member string, incr float64) error {
+	return c.client.ZIncrBy(ctx, key, incr, member).Err()
+}
+
 func (c *RedisCache) Exists(ctx context.Context, key string) (bool, error) {
 	n, err := c.client.Exists(ctx, key).Result()
 	return n > 0, err

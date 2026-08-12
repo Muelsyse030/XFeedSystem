@@ -10,6 +10,7 @@ type FeedItem struct {
 	Content     string     `json:"content"`
 	Images      []string   `json:"images"`
 	Type        int8       `json:"type"`
+	Topics      []string   `json:"topics"`
 	PublishedAt time.Time  `json:"published_at"`
 }
 

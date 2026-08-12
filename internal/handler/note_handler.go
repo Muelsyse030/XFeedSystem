@@ -27,6 +27,7 @@ type CreateNoteRequest struct {
 	Content string   `json:"content"`
 	Type    int      `json:"type"`
 	Images  []string `json:"images"`
+	Topics  []string `json:"topics"`
 }
 type NoteResponse struct {
 	ID          int64     `json:"id"`
@@ -66,7 +67,7 @@ func (h *NoteHandler) Create(c *gin.Context) {
 		})
 		return
 	}
-	note, err := h.noteService.Create(userID, req.Title, req.Content, req.Images)
+	note, err := h.noteService.Create(userID, req.Title, req.Content, req.Images, req.Topics)
 	if err != nil {
 		c.JSON(500, gin.H{
 			"code":    5002,
@@ -791,7 +792,7 @@ func (h *NoteHandler) Updata(c *gin.Context) {
 		})
 		return
 	}
-	err = h.noteService.Updata(c.Request.Context(), noteID, userID, req.Title, req.Content, req.Images)
+	err = h.noteService.Updata(c.Request.Context(), noteID, userID, req.Title, req.Content, req.Images, req.Topics)
 	if err != nil {
 		if errors.Is(err, service.ErrEmptyNoteContent) {
 			c.JSON(http.StatusBadRequest, gin.H{

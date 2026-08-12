@@ -123,6 +123,20 @@ func (s *FeedService) ListForYou(ctx context.Context, cursorStr string, limit in
 	return resp, nil
 }
 
+// ListTopic 话题页 feed（时间倒序键集分页，复用响应组装）
+func (s *FeedService) ListTopic(ctx context.Context, topicID int64, cursorStr string, limit int, currentUserID int64) (*FeedListResponse, error) {
+	feedCursor, err := cursor.ParseFeedCursor(cursorStr)
+	if err != nil {
+		return nil, err
+	}
+	notes, err := s.repo.ListByTopic(ctx, topicID, feedCursor, limit)
+	if err != nil {
+		return nil, err
+	}
+	notes = s.filterBlockedNotes(ctx, currentUserID, notes)
+	return s.buildFeedResponse(ctx, notes)
+}
+
 // getFeedPage 从打分 ZSET 取一页（score 逆序，同分按 id 逆序）
 func (s *FeedService) getFeedPage(ctx context.Context, userID int64, cursorScore float64, cursorID int64, limit int) ([]scoredFeedItem, error) {
 	key := cache.FeedEngineKey(userID)
@@ -217,6 +231,11 @@ func (s *FeedService) buildFeedResponse(ctx context.Context, notes []*model.Note
 	for _, u := range users {
 		userMap[u.ID] = u
 	}
+	noteIDs := make([]int64, len(notes))
+	for i, n := range notes {
+		noteIDs[i] = n.ID
+	}
+	topicsByNote, _ := s.repo.ListTopicsByNoteIDs(ctx, noteIDs)
 
 	items := make([]model.FeedItem, 0, len(notes))
 	nextCursor := ""
@@ -229,6 +248,7 @@ func (s *FeedService) buildFeedResponse(ctx context.Context, notes []*model.Note
 			Content:     cursor.BuildSummary(note.Content, 120),
 			Images:      parseFeedImages(note.Images),
 			Type:        note.Type,
+			Topics:      topicsByNote[note.ID],
 			PublishedAt: note.PublishedAt,
 		}
 

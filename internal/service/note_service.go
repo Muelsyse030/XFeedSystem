@@ -50,16 +50,17 @@ type NoteService struct {
 	search   *repo.SearchRepo
 	notifSvc *NotificationService
 	block    *BlockService
+	topics   *TopicService
 }
 
 const noteCacheTTL = 10 * time.Minute
 const authorNotesCacheTTL = 5 * time.Minute
 
-func NewNoteService(r repo.NoteRepo, c *cache.RedisCache, sr *repo.SearchRepo, ns *NotificationService, b *BlockService) *NoteService {
-	return &NoteService{repo: r, cache: c, search: sr, notifSvc: ns, block: b}
+func NewNoteService(r repo.NoteRepo, c *cache.RedisCache, sr *repo.SearchRepo, ns *NotificationService, b *BlockService, t *TopicService) *NoteService {
+	return &NoteService{repo: r, cache: c, search: sr, notifSvc: ns, block: b, topics: t}
 }
 
-func (s *NoteService) Create(userID int64, title, content string, images []string) (*model.Note, error) {
+func (s *NoteService) Create(userID int64, title, content string, images []string, topics []string) (*model.Note, error) {
 	imagesJSON := marshalImages(images)
 	note := &model.Note{
 		AuthorID:    userID,
@@ -71,6 +72,12 @@ func (s *NoteService) Create(userID int64, title, content string, images []strin
 	}
 	if _, err := s.repo.Create(note); err != nil {
 		return nil, err
+	}
+	if s.topics != nil {
+		if err := s.topics.AttachToNote(context.Background(), note.ID,
+			s.topics.ExtractTopics(content, topics)); err != nil {
+			logger.Sugar.Errorf("attach topics err: %v", err)
+		}
 	}
 
 	_ = s.cache.SetJSON(context.Background(), cache.NoteKey(note.ID), note, noteCacheTTL)
@@ -134,6 +141,11 @@ func (s *NoteService) GetByID(ctx context.Context, id int64) (*model.Note, error
 func (s *NoteService) Delete(ctx context.Context, id int64, authorID int64) error {
 	if err := s.repo.DeleteByID(ctx, id, authorID); err != nil {
 		return err
+	}
+	if s.topics != nil {
+		if err := s.topics.DetachFromNote(ctx, id); err != nil {
+			logger.Sugar.Errorf("detach topics err: %v", err)
+		}
 	}
 	_ = s.cache.Delete(ctx, cache.NoteKey(id))
 	_ = s.cache.Delete(ctx,
@@ -361,7 +373,7 @@ func (s *NoteService) DeleteComment(ctx context.Context, commentID int64, userID
 	return nil
 }
 
-func (s *NoteService) Updata(ctx context.Context, noteID, authorID int64, title, content string, images []string) error {
+func (s *NoteService) Updata(ctx context.Context, noteID, authorID int64, title, content string, images []string, topics []string) error {
 	if noteID <= 0 {
 		return ErrInvalidNoteID
 	}
@@ -373,6 +385,11 @@ func (s *NoteService) Updata(ctx context.Context, noteID, authorID int64, title,
 	}
 	if err := s.repo.UpdataByAuthorID(ctx, noteID, authorID, title, content, marshalImages(images)); err != nil {
 		return err
+	}
+	if s.topics != nil {
+		if err := s.topics.ReplaceTopics(ctx, noteID, s.topics.ExtractTopics(content, topics)); err != nil {
+			logger.Sugar.Errorf("replace topics err: %v", err)
+		}
 	}
 	_ = s.cache.Delete(ctx, cache.NoteKey(noteID))
 	_ = s.cache.Delete(ctx, cache.NoteDetailRawKey(noteID))

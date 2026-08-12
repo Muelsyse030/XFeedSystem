@@ -14,9 +14,9 @@ func InitDB(dsn string) *gorm.DB {
 	if err != nil {
 		panic("无法连接到数据库: " + err.Error())
 	}
-	sqlDB,err := db.DB()
+	sqlDB, err := db.DB()
 	if err != nil {
-		panic("获取底层sql.DB失败:"+err.Error())
+		panic("获取底层sql.DB失败:" + err.Error())
 	}
 	sqlDB.SetMaxOpenConns(100)
 	sqlDB.SetMaxIdleConns(20)
@@ -30,6 +30,8 @@ func InitDB(dsn string) *gorm.DB {
 		&model.NoteComment{},
 		&model.Notification{},
 		&model.Block{},
+		&model.Topic{},
+		&model.NoteTopic{},
 	); err != nil {
 		panic("自动迁移失败: " + err.Error())
 	}

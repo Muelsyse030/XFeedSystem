@@ -45,6 +45,9 @@ func SetupRouter(db *gorm.DB, appCfg config.Config) *gin.Engine {
 	blockService := service.NewBlockService(blockRepo, userRepo, redisCache)
 	blockHandler := handler.NewBlockHandler(blockService)
 
+	topicRepo := repo.NewGormTopicRepo(db)
+	topicService := service.NewTopicService(topicRepo, redisCache)
+
 	adminRepo := repo.NewGormAdminRepo(db)
 	adminService := service.NewAdminService(adminRepo)
 	adminHandler := handler.NewAdminHandler(adminService)
@@ -52,11 +55,12 @@ func SetupRouter(db *gorm.DB, appCfg config.Config) *gin.Engine {
 	userService := service.NewUserService(userRepo, redisCache, notifService, blockService)
 	userHandler := handler.NewUserHandler(userService, jwtService, redisCache)
 	noteRepo := repo.NewGormNoteRepo(db)
-	noteService := service.NewNoteService(noteRepo, redisCache, searchRepo, notifService, blockService)
+	noteService := service.NewNoteService(noteRepo, redisCache, searchRepo, notifService, blockService, topicService)
 	noteHandler := handler.NewNoteHandler(noteService, userRepo, redisCache)
 	feedRepo := repo.NewGormFeedRepo(db)
 	feedService := service.NewFeedService(feedRepo, userRepo, redisCache, searchRepo, blockService)
 	feedHandler := handler.NewFeedHandler(feedService, redisCache)
+	topicHandler := handler.NewTopicHandler(topicService, feedService, redisCache)
 	storageService, err := service.NewStorageService(appCfg)
 	if err != nil {
 		logger.Sugar.Warnf("warn: init oss storage: %v", err)
@@ -97,6 +101,9 @@ func SetupRouter(db *gorm.DB, appCfg config.Config) *gin.Engine {
 	r.GET("/notes/:id", jwtService.OptionalJWTAuth(), noteHandler.Detail)
 	r.GET("/users/:id/notes", noteHandler.ListByUser)
 	r.GET("/feed", jwtService.OptionalJWTAuth(), feedHandler.List)
+	r.GET("/topics/hot", topicHandler.Hot)
+	r.GET("/topics/:id/feed", jwtService.OptionalJWTAuth(), topicHandler.Feed)
+	r.GET("/topics/suggest", topicHandler.Suggest)
 	r.GET("/users/:id", userHandler.GetProfile)
 	r.GET("/search", feedHandler.Search)
 	r.GET("/users/:id/following", jwtService.OptionalJWTAuth(), userHandler.ListFollowing)
