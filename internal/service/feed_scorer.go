@@ -3,7 +3,6 @@ package service
 import (
 	"XFeedSystem/internal/model"
 	"math"
-	"sort"
 	"time"
 )
 
@@ -23,16 +22,45 @@ type scoredNote struct {
 	Score float64
 }
 
-func computeScore(note *model.Note, now time.Time, followingSet map[int64]bool, typePref map[int8]float64) float64 {
-	interaction := float64(note.LikeCount)*WeightLike + float64(note.FavoriteCount)*WeightFavorite + float64(note.CommentCount)*WeightComment
+// func computeScore(note *model.Note, now time.Time, followingSet map[int64]bool, typePref map[int8]float64) float64 {
+// 	interaction := float64(note.LikeCount)*WeightLike + float64(note.FavoriteCount)*WeightFavorite + float64(note.CommentCount)*WeightComment
 
+// 	hours := now.Sub(note.PublishedAt).Hours()
+// 	if hours < 0 {
+// 		hours = 0
+// 	}
+// 	decay := 1.0 / (1.0 + math.Sqrt(hours))
+
+// 	score := interaction * decay
+
+// 	if followingSet != nil && followingSet[note.AuthorID] {
+// 		score *= FollowBoost
+// 	}
+
+// 	if typePref != nil {
+// 		if boost, ok := typePref[note.Type]; ok {
+// 			score *= (1.0 + boost*TypePrefBoost)
+// 		}
+// 	}
+
+// 	return score
+// }
+
+
+
+func computeScore(note *model.Note , now time.Time , followingSet map[int64]bool , typePref map[int8]float64 , stats map[int64]*model.NoteStats) float64 {
+	interaction := float64(note.LikeCount) * WeightLike + float64(note.FavoriteCount) * WeightFavorite + float64(note.CommentCount)*WeightComment
 	hours := now.Sub(note.PublishedAt).Hours()
 	if hours < 0 {
 		hours = 0
 	}
-	decay := 1.0 / (1.0 + math.Sqrt(hours))
+	decay := 1.0/(1.0 + math.Sqrt(hours))
 
 	score := interaction * decay
+
+	if st := stats[note.ID]; st != nil {
+		score *= ctrBoost(st.Reads, st.Impressions)
+	}
 
 	if followingSet != nil && followingSet[note.AuthorID] {
 		score *= FollowBoost
@@ -47,19 +75,11 @@ func computeScore(note *model.Note, now time.Time, followingSet map[int64]bool, 
 	return score
 }
 
-func scoreAndSort(notes []*model.Note, now time.Time, followingSet map[int64]bool, typePref map[int8]float64) []scoredNote {
-	result := make([]scoredNote, 0, len(notes))
-	for _, n := range notes {
-		result = append(result, scoredNote{
-			Note:  n,
-			Score: computeScore(n, now, followingSet, typePref),
-		})
+func ctrBoost(reads, impressions int64) float64 {
+	const alpha,beta,weight = 10.0 , 100.0 , 1.0
+	if impressions <= 0 {
+		return 1.0
 	}
-	sort.Slice(result, func(i, j int) bool {
-		if result[i].Score != result[j].Score {
-			return result[i].Score > result[j].Score
-		}
-		return result[i].Note.ID > result[j].Note.ID
-	})
-	return result
+	ctr := (float64(reads) + alpha) / (float64(impressions) + beta)
+	return 1.0 + weight * ctr
 }

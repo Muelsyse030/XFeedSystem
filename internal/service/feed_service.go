@@ -20,8 +20,9 @@ const (
 
 // scoredFeedItem 打分页元素
 type scoredFeedItem struct {
-	ID    int64
-	Score float64
+	ID       int64
+	Score    float64
+	AuthorID int64
 }
 
 var (
@@ -61,10 +62,11 @@ type FeedService struct {
 	cache    *cache.RedisCache
 	search   *repo.SearchRepo
 	block    *BlockService
+	stats	 *StatsService
 }
 
-func NewFeedService(r *repo.GormFeedRepo, u *repo.GormUserRepo, c *cache.RedisCache, s *repo.SearchRepo, b *BlockService) *FeedService {
-	return &FeedService{repo: r, userRepo: u, cache: c, search: s, block: b}
+func NewFeedService(r *repo.GormFeedRepo, u *repo.GormUserRepo, c *cache.RedisCache, s *repo.SearchRepo, b *BlockService , st *StatsService) *FeedService {
+	return &FeedService{repo: r, userRepo: u, cache: c, search: s, block: b , stats : st}
 }
 
 func (s *FeedService) ListForYou(ctx context.Context, cursorStr string, limit int, currentUserID int64) (*FeedListResponse, error) {
@@ -109,7 +111,14 @@ func (s *FeedService) ListForYou(ctx context.Context, cursorStr string, limit in
 	if err != nil {
 		return nil, err
 	}
-
+	if s.stats != nil {
+		shownIDs := make([]int64, 0, len(ordered))
+		for _, n := range ordered {
+			shownIDs = append(shownIDs, n.ID)
+		}
+		s.stats.RecordImpressions(ctx, shownIDs)
+		s.stats.MarkRead(ctx, currentUserID, shownIDs)
+	}
 	// 下一页游标 = 本页最后一条（过滤后）的 score + id
 	lastNote := ordered[len(ordered)-1]
 	lastScore := page[len(page)-1].Score
@@ -146,26 +155,69 @@ func (s *FeedService) getFeedPage(ctx context.Context, userID int64, cursorScore
 
 	max := "+inf"
 	if cursorID > 0 {
-		// 排他边界：严格小于 游标折叠分（即 score 更小，或同分 id 更小）
 		max = "(" + strconv.FormatInt(foldScore(cursorScore, cursorID), 10)
 	}
-	zs, err := s.cache.ZRevRangeByScore(ctx, key, max, "-inf", 0, int64(limit))
-	if err != nil {
-		return nil, err
+
+	readSet := map[int64]bool{}
+	if s.stats != nil && userID > 0 {
+		readSet, _ = s.stats.LoadReadSet(ctx, userID)
 	}
-	out := make([]scoredFeedItem, 0, len(zs))
-	for _, z := range zs {
-		member, ok := z.Member.(string)
-		if !ok {
-			continue
-		}
-		v, err := strconv.ParseInt(member, 10, 64)
+
+	const maxPerAuthor = 2
+	authorCount := map[int64]int{}
+	out := make([]scoredFeedItem, 0, limit)
+	fetchSize := int64(limit * 3)
+	var offset int64
+
+	for len(out) < limit {
+		zs, err := s.cache.ZRevRangeByScore(ctx, key, max, "-inf", offset, fetchSize)
 		if err != nil {
-			continue
+			return nil, err
 		}
-		score, id := unfoldScore(v)
-		out = append(out, scoredFeedItem{ID: id, Score: score})
+		if len(zs) == 0 {
+			break
+		}
+
+		ids := make([]int64, 0, len(zs))
+		candidates := make([]scoredFeedItem, 0, len(zs))
+		for _, z := range zs {
+			member, ok := z.Member.(string)
+			if !ok {
+				continue
+			}
+			v, err := strconv.ParseInt(member, 10, 64)
+			if err != nil {
+				continue
+			}
+			score, id := unfoldScore(v)
+			ids = append(ids, id)
+			candidates = append(candidates, scoredFeedItem{ID: id, Score: score})
+		}
+
+		authorByNote, _ := s.repo.GetNoteAuthorIDs(ctx, ids)
+
+		for _, it := range candidates {
+			if readSet[it.ID] {
+				continue
+			}
+			authorID := authorByNote[it.ID]
+			if authorCount[authorID] >= maxPerAuthor {
+				continue
+			}
+			it.AuthorID = authorID
+			out = append(out, it)
+			authorCount[authorID]++
+			if len(out) >= limit {
+				break
+			}
+		}
+
+		offset += fetchSize
+		if int64(len(zs)) < fetchSize {
+			break
+		}
 	}
+
 	return out, nil
 }
 
@@ -209,8 +261,16 @@ func (s *FeedService) buildFeedEngine(ctx context.Context, userID int64, key str
 
 	now := time.Now()
 	scores := make(map[int64]int64, len(notes))
+	var stats map[int64]*model.NoteStats
+	if s.stats != nil {
+		noteIDs := make([]int64, len(notes))
+		for i, n := range notes {
+			noteIDs[i] = n.ID
+		}
+		stats, _ = s.stats.GetStatsMap(ctx, noteIDs)
+	}
 	for _, n := range notes {
-		scores[n.ID] = foldScore(computeScore(n, now, followingSet, typePref), n.ID)
+		scores[n.ID] = foldScore(computeScore(n, now, followingSet, typePref, stats), n.ID)
 	}
 	return s.cache.ZAddFeed(ctx, key, scores, feedEngineTTL)
 }

@@ -282,6 +282,40 @@ func (c *RedisCache) ZRevRangeByScore(ctx context.Context, key string, max, min 
 	}).Result()
 }
 
+func (c *RedisCache) IncrBy(ctx context.Context, key string, n int64) (int64, error) {
+	return c.client.IncrBy(ctx, key, n).Result()
+}
+
+func (c *RedisCache) IncrMany(ctx context.Context , keys []string , n int64) error {
+	if len(keys) == 0{
+		return nil
+	}
+	pipe := c.client.TxPipeline()
+	for _ , k := range keys {
+		pipe.IncrBy(ctx , k ,n)
+	}
+	_ , err := pipe.Exec(ctx)
+	return err
+
+}
+
+func (c *RedisCache) ScanKeys(ctx context.Context, pattern string, batch int64) ([]string, error) {
+	var keys []string
+	var cursor uint64
+	for {
+		ks, next, err := c.client.Scan(ctx, cursor, pattern, batch).Result()
+		if err != nil {
+			return nil, err
+		}
+		keys = append(keys, ks...)
+		cursor = next
+		if cursor == 0 {
+			break
+		}
+	}
+	return keys, nil
+}
+
 func BlockedIDsKey(userID int64) string {
 	return fmt.Sprintf("block:blocked:%d", userID)
 }
@@ -312,4 +346,16 @@ func UserProfileRawKey(userID int64) string {
 
 func FeedPageRawKey(userID int64, limit int, cursor string) string {
 	return fmt.Sprintf("feed:page:raw:%d:%d:%s", userID, limit, cursor)
+}
+
+func NoteImpKey(noteID int64) string {
+	return fmt.Sprintf("stats:imp:%d",noteID)
+}
+
+func NoteReadKey(noteID int64) string {
+	return fmt.Sprintf("stats:read:%d",noteID)
+}
+
+func UserReadKey(userID int64) string {
+	return fmt.Sprintf("user:read:%d",userID)
 }

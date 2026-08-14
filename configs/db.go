@@ -32,6 +32,7 @@ func InitDB(dsn string) *gorm.DB {
 		&model.Block{},
 		&model.Topic{},
 		&model.NoteTopic{},
+		&model.NoteStats{},
 	); err != nil {
 		panic("自动迁移失败: " + err.Error())
 	}

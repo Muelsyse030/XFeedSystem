@@ -54,11 +54,15 @@ func SetupRouter(db *gorm.DB, appCfg config.Config) *gin.Engine {
 
 	userService := service.NewUserService(userRepo, redisCache, notifService, blockService)
 	userHandler := handler.NewUserHandler(userService, jwtService, redisCache)
+	statsRepo := repo.NewGormStatsRepo(db)
+	statsService := service.NewStatsService(statsRepo, redisCache)
+	statsService.StartFlusher(context.Background())
+
 	noteRepo := repo.NewGormNoteRepo(db)
 	noteService := service.NewNoteService(noteRepo, redisCache, searchRepo, notifService, blockService, topicService)
-	noteHandler := handler.NewNoteHandler(noteService, userRepo, redisCache)
+	noteHandler := handler.NewNoteHandler(noteService, userRepo, redisCache, statsService)
 	feedRepo := repo.NewGormFeedRepo(db)
-	feedService := service.NewFeedService(feedRepo, userRepo, redisCache, searchRepo, blockService)
+	feedService := service.NewFeedService(feedRepo, userRepo, redisCache, searchRepo, blockService, statsService)
 	feedHandler := handler.NewFeedHandler(feedService, redisCache)
 	topicHandler := handler.NewTopicHandler(topicService, feedService, redisCache)
 	storageService, err := service.NewStorageService(appCfg)

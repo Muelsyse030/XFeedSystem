@@ -103,13 +103,21 @@ func (r *GormUserRepo) GetFollowingIDs(ctx context.Context, userID int64) ([]int
 	return ids, nil
 }
 func (r *GormUserRepo) Updata(ctx context.Context, userID int64, avatarURL string, bio string) error {
+	updates := make(map[string]interface{})
+	if avatarURL != "" {
+		updates["avatar_url"] = avatarURL
+	}
+	if bio != "" {
+		updates["bio"] = bio
+	}
+	if len(updates) == 0 {
+		return gorm.ErrRecordNotFound
+	}
+
 	res := r.db.WithContext(ctx).
 		Model(&model.User{}).
 		Where("id = ?", userID).
-		Updates(map[string]interface{}{
-			"avatar_url": avatarURL,
-			"bio":        bio,
-		})
+		Updates(updates)
 	if res.Error != nil {
 		return res.Error
 	}

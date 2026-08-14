@@ -25,6 +25,7 @@ type FeedRepo interface {
 	ListRecent(ctx context.Context, limit int) ([]*model.Note, error)
 	ListByTopic(ctx context.Context, topicID int64, cursor *model.FeedCursor, limit int) ([]*model.Note, error)
 	GetUserTypePreference(ctx context.Context, userID int64) (map[int8]float64, error)
+	GetNoteAuthorIDs(ctx context.Context, noteIDs []int64) (map[int64]int64, error)
 }
 
 func (r *GormFeedRepo) ListForYou(ctx context.Context, cursor *model.FeedCursor, limit int) ([]*model.Note, error) {
@@ -205,4 +206,23 @@ func (r *GormFeedRepo) GetUserTypePreference(ctx context.Context, userID int64) 
 		pref[r.Type] = float64(r.Count) / total
 	}
 	return pref, nil
+}
+
+func (r *GormFeedRepo) GetNoteAuthorIDs(ctx context.Context, noteIDs []int64) (map[int64]int64, error) {
+	out := make(map[int64]int64)
+	if len(noteIDs) == 0 {
+		return out, nil
+	}
+	var rows []struct {
+		ID       int64
+		AuthorID int64
+	}
+	if err := r.db.WithContext(ctx).Model(&model.Note{}).
+		Select("id", "author_id").Where("id IN ?", noteIDs).Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		out[row.ID] = row.AuthorID
+	}
+	return out, nil
 }

@@ -21,6 +21,7 @@ type NoteHandler struct {
 	noteService *service.NoteService
 	userRepo    *repo.GormUserRepo
 	cache       *cache.RedisCache
+	stats		*service.StatsService
 }
 type CreateNoteRequest struct {
 	Title   string   `json:"title"`
@@ -38,8 +39,8 @@ type NoteResponse struct {
 	CreatedAt   time.Time `json:"created_at"`
 }
 
-func NewNoteHandler(noteService *service.NoteService, userRepo *repo.GormUserRepo, cache *cache.RedisCache) *NoteHandler {
-	return &NoteHandler{noteService: noteService, userRepo: userRepo, cache: cache}
+func NewNoteHandler(noteService *service.NoteService, userRepo *repo.GormUserRepo, cache *cache.RedisCache , stats *service.StatsService) *NoteHandler {
+	return &NoteHandler{noteService: noteService, userRepo: userRepo, cache: cache , stats: stats}
 }
 
 func (h *NoteHandler) Create(c *gin.Context) {
@@ -149,7 +150,9 @@ func (h *NoteHandler) Detail(c *gin.Context) {
 	}
 
 	userID, _ := getUserIDFromContext(c)
-
+	if h.stats != nil {
+		h.stats.RecordRead(c.Request.Context(), id)
+	}
 	// 匿名详情：命中原始字节缓存直接返回，零序列化
 	if userID == 0 && h.cache != nil {
 		cacheKey := cache.NoteDetailRawKey(id)

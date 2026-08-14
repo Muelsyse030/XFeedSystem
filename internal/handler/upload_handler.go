@@ -4,6 +4,7 @@ import (
 	"XFeedSystem/internal/pkg/logger"
 	"XFeedSystem/internal/service"
 	"net/http"
+	"path/filepath"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -26,8 +27,17 @@ func (h *UploadHandler) Image(c *gin.Context) {
 
 	contentType := header.Header.Get("Content-Type")
 	if contentType != "" && !strings.HasPrefix(contentType, "image/") {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 4002, "message": "only image files are allowed"})
-		return
+		contentType = inferImageContentType(header.Filename)
+		if contentType == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"code": 4002, "message": "only image files are allowed"})
+			return
+		}
+		header.Header.Set("Content-Type", contentType)
+	} else if contentType == "" {
+		contentType = inferImageContentType(header.Filename)
+		if contentType != "" {
+			header.Header.Set("Content-Type", contentType)
+		}
 	}
 
 	url, err := h.storageService.UploadImage(c.Request.Context(), file, header, "images")
@@ -43,4 +53,25 @@ func (h *UploadHandler) Image(c *gin.Context) {
 		"message": "ok",
 		"data":    gin.H{"url": url},
 	})
+}
+
+func inferImageContentType(filename string) string {
+	ext := strings.ToLower(filepath.Ext(filename))
+	fallbackByExt := map[string]string{
+		".jpg":  "image/jpeg",
+		".jpeg": "image/jpeg",
+		".png":  "image/png",
+		".gif":  "image/gif",
+		".webp": "image/webp",
+		".heic": "image/heic",
+		".heif": "image/heif",
+		".bmp":  "image/bmp",
+	}
+
+	if inferred, ok := fallbackByExt[ext]; ok {
+		return inferred
+	}
+
+	// 没有可识别的扩展名时，不把 octet-stream 当作图片。
+	return ""
 }
