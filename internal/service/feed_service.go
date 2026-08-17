@@ -117,7 +117,6 @@ func (s *FeedService) ListForYou(ctx context.Context, cursorStr string, limit in
 			shownIDs = append(shownIDs, n.ID)
 		}
 		s.stats.RecordImpressions(ctx, shownIDs)
-		s.stats.MarkRead(ctx, currentUserID, shownIDs)
 	}
 	// 下一页游标 = 本页最后一条（过滤后）的 score + id
 	lastNote := ordered[len(ordered)-1]
@@ -158,11 +157,6 @@ func (s *FeedService) getFeedPage(ctx context.Context, userID int64, cursorScore
 		max = "(" + strconv.FormatInt(foldScore(cursorScore, cursorID), 10)
 	}
 
-	readSet := map[int64]bool{}
-	if s.stats != nil && userID > 0 {
-		readSet, _ = s.stats.LoadReadSet(ctx, userID)
-	}
-
 	const maxPerAuthor = 2
 	authorCount := map[int64]int{}
 	out := make([]scoredFeedItem, 0, limit)
@@ -197,9 +191,6 @@ func (s *FeedService) getFeedPage(ctx context.Context, userID int64, cursorScore
 		authorByNote, _ := s.repo.GetNoteAuthorIDs(ctx, ids)
 
 		for _, it := range candidates {
-			if readSet[it.ID] {
-				continue
-			}
 			authorID := authorByNote[it.ID]
 			if authorCount[authorID] >= maxPerAuthor {
 				continue
