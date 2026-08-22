@@ -60,6 +60,20 @@ func NewNoteService(r repo.NoteRepo, c *cache.RedisCache, sr *repo.SearchRepo, n
 	return &NoteService{repo: r, cache: c, search: sr, notifSvc: ns, block: b, topics: t}
 }
 
+// invalidateNoteFeed 笔记级写操作后的缓存失效：
+//   - 同步删笔记 JSON + 详情字节缓存（精确 key，立刻生效）
+//   - 异步失效全量打分引擎 + feed 页字节缓存（需 SCAN，不阻塞写响应）
+func (s *NoteService) invalidateNoteFeed(ctx context.Context, noteID int64) {
+	if s.cache == nil {
+		return
+	}
+	_ = s.cache.Delete(ctx, cache.NoteKey(noteID), cache.NoteDetailRawKey(noteID))
+	safeGo(func() {
+		_ = s.cache.InvalidateFeedEngineAll(context.Background())
+		_ = s.cache.InvalidateFeedRawAll(context.Background())
+	})
+}
+
 func (s *NoteService) Create(userID int64, title, content string, images []string, topics []string) (*model.Note, error) {
 	imagesJSON := marshalImages(images)
 	note := &model.Note{
@@ -79,13 +93,18 @@ func (s *NoteService) Create(userID int64, title, content string, images []strin
 			logger.Sugar.Errorf("attach topics err: %v", err)
 		}
 	}
+	if s.cache != nil {
+		_ = s.cache.Delete(context.Background(), cache.NoteKey(note.ID), cache.NoteDetailRawKey(note.ID))
+		_ = s.cache.Delete(context.Background(),
+			cache.UserNotesKey(note.AuthorID, 10),
+			cache.UserNotesKey(note.AuthorID, 20),
+		)
+	}
+	safeGo(func() {
+		_ = s.cache.InvalidateFeedEngineAll(context.Background())
+		_ = s.cache.InvalidateFeedRawAll(context.Background())
+	})
 
-	_ = s.cache.SetJSON(context.Background(), cache.NoteKey(note.ID), note, noteCacheTTL)
-	_ = s.cache.Delete(context.Background(),
-		cache.UserNotesKey(userID, 10),
-		cache.UserNotesKey(userID, 20),
-		cache.FeedForYouKey(10),
-		cache.FeedForYouKey(20))
 	if s.search != nil {
 		n := note
 		safeGo(func() {
@@ -177,8 +196,7 @@ func (s *NoteService) Like(ctx context.Context, noteID, userID int64) (bool, err
 	}
 	created, err := s.repo.Like(ctx, noteID, userID)
 	if err == nil {
-		_ = s.cache.Delete(ctx, cache.NoteKey(noteID))
-		_ = s.cache.Delete(ctx, cache.NoteDetailRawKey(noteID))
+		s.invalidateNoteFeed(ctx, noteID)
 	}
 	if created && s.notifSvc != nil {
 		note, _ := s.repo.GetByID(ctx, noteID)
@@ -204,8 +222,7 @@ func (s *NoteService) Unlike(ctx context.Context, noteID, userID int64) (bool, e
 	}
 	deleted, err := s.repo.Unlike(ctx, noteID, userID)
 	if err == nil {
-		_ = s.cache.Delete(ctx, cache.NoteKey(noteID))
-		_ = s.cache.Delete(ctx, cache.NoteDetailRawKey(noteID))
+		s.invalidateNoteFeed(ctx, noteID)
 	}
 	return deleted, err
 }
@@ -226,8 +243,7 @@ func (s *NoteService) Favorite(ctx context.Context, noteID, userID int64) (bool,
 	}
 	created, err := s.repo.Favorite(ctx, noteID, userID)
 	if err == nil {
-		_ = s.cache.Delete(ctx, cache.NoteKey(noteID))
-		_ = s.cache.Delete(ctx, cache.NoteDetailRawKey(noteID))
+		s.invalidateNoteFeed(ctx, noteID)
 	}
 	if created && s.notifSvc != nil {
 		note, _ := s.repo.GetByID(ctx, noteID)
@@ -252,9 +268,8 @@ func (s *NoteService) Unfavorite(ctx context.Context, noteID, userID int64) (boo
 		return false, err
 	}
 	deleted, err := s.repo.Unfavorite(ctx, noteID, userID)
-	if err == nil {
-		_ = s.cache.Delete(ctx, cache.NoteKey(noteID))
-		_ = s.cache.Delete(ctx, cache.NoteDetailRawKey(noteID))
+		if err == nil {
+		s.invalidateNoteFeed(ctx, noteID)
 	}
 	return deleted, err
 }
@@ -313,8 +328,10 @@ func (s *NoteService) CreateReply(ctx context.Context, userID, noteID, parentID,
 	}
 	comment, err := s.repo.CreateComment(ctx, userID, noteID, parentID, replyToUserID, content)
 	if err != nil {
+		s.invalidateNoteFeed(ctx, noteID)
 		return nil, err
 	}
+	
 	if s.notifSvc != nil {
 		n := note
 		if parentID == 0 {
@@ -358,7 +375,8 @@ func (s *NoteService) DeleteComment(ctx context.Context, commentID int64, userID
 	if commentID <= 0 {
 		return ErrInvalidCommentID
 	}
-	if _, err := s.repo.GetCommentByID(ctx, commentID); err != nil {
+	comment, err := s.repo.GetCommentByID(ctx, commentID)
+	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ErrCommentNotFound
 		}
@@ -370,9 +388,9 @@ func (s *NoteService) DeleteComment(ctx context.Context, commentID int64, userID
 		}
 		return err
 	}
+	s.invalidateNoteFeed(ctx, comment.NoteID)
 	return nil
 }
-
 func (s *NoteService) Updata(ctx context.Context, noteID, authorID int64, title, content string, images []string, topics []string) error {
 	if noteID <= 0 {
 		return ErrInvalidNoteID
@@ -414,6 +432,11 @@ func (s *NoteService) Updata(ctx context.Context, noteID, authorID int64, title,
 		})
 	}
 
+	safeGo(func() {
+		_ = s.cache.InvalidateFeedEngineAll(context.Background())
+		_ = s.cache.InvalidateFeedRawAll(context.Background())
+	})
+	
 	return nil
 }
 

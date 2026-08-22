@@ -315,6 +315,44 @@ func (c *RedisCache) ScanKeys(ctx context.Context, pattern string, batch int64) 
 	}
 	return keys, nil
 }
+// 扫描并删除所有匹配 pattern 的 key
+func (c *RedisCache) DeleteByPattern(ctx context.Context , pattern string) error {
+	keys ,err := c.ScanKeys(ctx,pattern,500)
+	if err != nil {
+		return err
+	}
+	return c.Delete(ctx,keys...)
+}
+
+//失效全量打分引擎 ZSET,下次读取 feed 时会按最新数据懒重建
+func (c *RedisCache) InvalidateFeedEngineAll(ctx context.Context) error {
+	return c.DeleteByPattern(ctx, FeedEngineKeyPrefix()+"*")
+}
+
+//失效某个用户的打分引擎 ZSET
+func (c *RedisCache) InvalidateFeedEngineForUser(ctx context.Context, userID int64) error {
+	return c.Delete(ctx, FeedEngineKey(userID))
+}
+
+//效所有 feed 页字节缓存
+func (c *RedisCache) InvalidateFeedRawAll(ctx context.Context) error {
+	if err := c.DeleteByPattern(ctx, FeedForYouRawPrefix()+"*"); err != nil {
+		return err
+	}
+	return c.DeleteByPattern(ctx, FeedPageRawPrefix()+"*")
+}
+//失效某个用户的 feed 页字节缓存
+func (c *RedisCache) InvalidateFeedRawForUser(ctx context.Context, userID int64) error {
+	u := strconv.FormatInt(userID, 10)
+	if err := c.DeleteByPattern(ctx, FeedForYouRawPrefix()+u+":*"); err != nil {
+		return err
+	}
+	return c.DeleteByPattern(ctx, FeedPageRawPrefix()+u+":*")
+}
+//失效所有话题页 feed 字节缓存
+func (c *RedisCache) InvalidateTopicFeedRaw(ctx context.Context) error {
+	return c.DeleteByPattern(ctx, TopicFeedRawPrefix()+"*")
+}
 
 func BlockedIDsKey(userID int64) string {
 	return fmt.Sprintf("block:blocked:%d", userID)
@@ -359,3 +397,20 @@ func NoteReadKey(noteID int64) string {
 func UserReadKey(userID int64) string {
 	return fmt.Sprintf("user:read:%d",userID)
 }
+
+func FeedEngineKeyPrefix() string {
+	return fmt.Sprintf("feed:engine:v1:")
+}
+
+func FeedForYouRawPrefix() string {
+	return fmt.Sprintf("feed:foryou:raw:")
+}
+
+func FeedPageRawPrefix() string {
+	return fmt.Sprintf("feed:page:raw:")
+}
+
+func TopicFeedRawPrefix() string {
+	return fmt.Sprintf("topic:feed:raw:")
+}
+

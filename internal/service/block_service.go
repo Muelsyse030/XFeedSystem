@@ -34,10 +34,16 @@ func (s *BlockService) Block(ctx context.Context, userID, blockedID int64) error
 	// 拉黑时自动双向取消关注
 	_ = s.userRepo.Delete(ctx, userID, blockedID)
 	_ = s.userRepo.Delete(ctx, blockedID, userID)
-	if s.cache != nil {
+		if s.cache != nil {
 		_ = s.cache.SRem(ctx, cache.FollowingIDsKey(userID), blockedID)
 		_ = s.cache.SRem(ctx, cache.FollowingIDsKey(blockedID), userID)
 		_ = s.cache.SAdd(ctx, cache.BlockedIDsKey(userID), blockedID)
+		safeGo(func() {
+			_ = s.cache.InvalidateFeedEngineForUser(context.Background(), userID)
+			_ = s.cache.InvalidateFeedEngineForUser(context.Background(), blockedID)
+			_ = s.cache.InvalidateFeedRawForUser(context.Background(), userID)
+			_ = s.cache.InvalidateFeedRawForUser(context.Background(), blockedID)
+		})
 	}
 	return nil
 }
@@ -48,6 +54,12 @@ func (s *BlockService) Unblock(ctx context.Context, userID, blockedID int64) err
 	}
 	if s.cache != nil {
 		_ = s.cache.SRem(ctx, cache.BlockedIDsKey(userID), blockedID)
+		safeGo(func() {
+			_ = s.cache.InvalidateFeedEngineForUser(context.Background(), userID)
+			_ = s.cache.InvalidateFeedEngineForUser(context.Background(), blockedID)
+			_ = s.cache.InvalidateFeedRawForUser(context.Background(), userID)
+			_ = s.cache.InvalidateFeedRawForUser(context.Background(), blockedID)
+		})
 	}
 	return nil
 }

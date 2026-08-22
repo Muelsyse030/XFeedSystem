@@ -128,4 +128,5 @@ func (s *TopicService) bumpHot(ctx context.Context, topicIDs []int64) {
 		return
 	}
 	_ = s.cache.Delete(ctx, cache.TopicHotKey())
+	_ = s.cache.InvalidateTopicFeedRaw(ctx)
 }

@@ -118,6 +118,10 @@ func (s *UserService) Follow(ctx context.Context, userID int64, followID int64) 
 	if s.cache != nil {
 		key := cache.FollowingIDsKey(userID)
 		_ = s.cache.SAdd(ctx, key, followID)
+		safeGo(func() {
+			_ = s.cache.InvalidateFeedEngineForUser(context.Background(), userID)
+			_ = s.cache.InvalidateFeedRawForUser(context.Background(), userID)
+		})
 	}
 	if s.notifSvc != nil {
 		safeGo(func() {
@@ -140,6 +144,10 @@ func (s *UserService) Unfollow(ctx context.Context, userID int64, followID int64
 	if s.cache != nil {
 		key := cache.FollowingIDsKey(userID)
 		_ = s.cache.SRem(ctx, key, followID)
+		safeGo(func() {
+			_ = s.cache.InvalidateFeedEngineForUser(context.Background(), userID)
+			_ = s.cache.InvalidateFeedRawForUser(context.Background(), userID)
+		})
 	}
 	return nil
 }
