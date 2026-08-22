@@ -328,10 +328,10 @@ func (s *NoteService) CreateReply(ctx context.Context, userID, noteID, parentID,
 	}
 	comment, err := s.repo.CreateComment(ctx, userID, noteID, parentID, replyToUserID, content)
 	if err != nil {
-		s.invalidateNoteFeed(ctx, noteID)
 		return nil, err
 	}
-	
+	s.invalidateNoteFeed(ctx, noteID)
+
 	if s.notifSvc != nil {
 		n := note
 		if parentID == 0 {
