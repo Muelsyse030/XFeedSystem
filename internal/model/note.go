@@ -21,6 +21,7 @@ type Note struct {
 	CreatedAt     time.Time
 	UpdatedAt     time.Time
 	PublishedAt   time.Time `gorm:"not null;index"`
+	VideoURL string `gorm:"type:text" json:"video_url"`
 }
 
 type NoteLike struct {

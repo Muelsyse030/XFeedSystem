@@ -13,7 +13,7 @@ type NoteRepo interface {
 	GetByID(ctx context.Context, id int64) (*model.Note, error)
 	DeleteByID(ctx context.Context, id int64, authorID int64) error
 	ListByAuthorID(ctx context.Context, authorID int64, cursor int64, limit int) ([]*model.Note, error)
-	UpdataByAuthorID(ctx context.Context, noteID, authorID int64, title, content, images string) error
+	UpdataByAuthorID(ctx context.Context, noteID, authorID int64, title, content, images string, noteType int8, videoURL string) error
 	Like(ctx context.Context, noteID int64, userID int64) (bool, error)
 	Unlike(ctx context.Context, noteID int64, userID int64) (bool, error)
 	IsLiked(ctx context.Context, noteID int64, userID int64) (bool, error)
@@ -287,7 +287,7 @@ func (r *GormNoteRepo) DeleteComment(ctx context.Context, commentID int64, userI
 	})
 }
 
-func (r *GormNoteRepo) UpdataByAuthorID(ctx context.Context, noteID, authorID int64, title, content, images string) error {
+func (r *GormNoteRepo) UpdataByAuthorID(ctx context.Context, noteID, authorID int64, title, content, images string, noteType int8, videoURL string) error {
 	res := r.db.WithContext(ctx).
 		Model(&model.Note{}).
 		Where("id = ? AND author_id = ? AND status = ?", noteID, authorID, model.NoteStatusPublished).
@@ -295,6 +295,8 @@ func (r *GormNoteRepo) UpdataByAuthorID(ctx context.Context, noteID, authorID in
 			"title":   title,
 			"content": content,
 			"images":  images,
+			"type":      noteType,
+			"video_url": videoURL,
 		})
 	if res.Error != nil {
 		return res.Error

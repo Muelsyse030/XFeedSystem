@@ -313,6 +313,7 @@ func (s *FeedService) buildFeedResponse(ctx context.Context, notes []*model.Note
 			Content:     cursor.BuildSummary(note.Content, 120),
 			Images:      parseFeedImages(note.Images),
 			Type:        note.Type,
+			VideoURL:    note.VideoURL,
 			Topics:      topicsByNote[note.ID],
 			PublishedAt: note.PublishedAt,
 		}

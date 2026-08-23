@@ -78,3 +78,22 @@ func (s *StorageService) UploadImage(ctx context.Context, file multipart.File, h
 func ioReadAll(file multipart.File) ([]byte, error) {
 	return io.ReadAll(file)
 }
+
+func (s *StorageService) UploadVideo(ctx context.Context, file multipart.File, header *multipart.FileHeader, prefix string) (string, error) {
+	if !s.cfg.OSS.Enable || s.bucket == nil {
+		return "", ErrOSSDisabled
+	}
+	defer file.Close()
+	ext := strings.ToLower(filepath.Ext(header.Filename))
+	if ext == "" {
+		ext = ".mp4"
+	}
+	objectKey := fmt.Sprintf("%s/%s%s", strings.Trim(prefix, "/"), uuid.NewString(), ext)
+	if err := s.bucket.PutObject(objectKey, file,
+		oss.ObjectACL(oss.ACLPublicRead),
+		oss.ContentType(header.Header.Get("Content-Type")),
+	); err != nil {
+		return "", err
+	}
+	return strings.TrimRight(s.cfg.OSS.BaseURL, "/") + "/" + objectKey, nil
+}

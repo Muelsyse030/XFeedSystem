@@ -151,6 +151,7 @@ func SetupRouter(db *gorm.DB, appCfg config.Config) *gin.Engine {
 		auth.DELETE("/users/:id/unblock", blockHandler.Unblock)
 
 		auth.POST("/upload/image", uploadHandler.Image)
+		auth.POST("/upload/video", uploadHandler.Video)
 	}
 
 	admin := auth.Group("/admin")

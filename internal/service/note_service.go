@@ -75,14 +75,23 @@ func (s *NoteService) invalidateNoteFeed(ctx context.Context, noteID int64) {
 	}
 }
 
-func (s *NoteService) Create(userID int64, title, content string, images []string, topics []string) (*model.Note, error) {
+// normalizeNoteType 笔记类型：1=图文（默认），2=视频
+func normalizeNoteType(t int) int8 {
+	if t == 2 {
+		return 2
+	}
+	return 1
+}
+
+func (s *NoteService) Create(userID int64, title, content string, images []string, topics []string, noteType int, videoURL string) (*model.Note, error) {
 	imagesJSON := marshalImages(images)
 	note := &model.Note{
 		AuthorID:    userID,
 		Title:       title,
 		Content:     content,
 		Images:      imagesJSON,
-		Type:        1, //1默认为文章
+		Type:        normalizeNoteType(noteType),
+		VideoURL:    strings.TrimSpace(videoURL),
 		PublishedAt: time.Now(),
 	}
 	if _, err := s.repo.Create(note); err != nil {
@@ -392,7 +401,7 @@ func (s *NoteService) DeleteComment(ctx context.Context, commentID int64, userID
 	s.invalidateNoteFeed(ctx, comment.NoteID)
 	return nil
 }
-func (s *NoteService) Updata(ctx context.Context, noteID, authorID int64, title, content string, images []string, topics []string) error {
+func (s *NoteService) Updata(ctx context.Context, noteID, authorID int64, title, content string, images []string, topics []string, noteType int, videoURL string) error {
 	if noteID <= 0 {
 		return ErrInvalidNoteID
 	}
@@ -402,7 +411,7 @@ func (s *NoteService) Updata(ctx context.Context, noteID, authorID int64, title,
 	if strings.TrimSpace(title) == "" || strings.TrimSpace(content) == "" {
 		return ErrEmptyNoteContent
 	}
-	if err := s.repo.UpdataByAuthorID(ctx, noteID, authorID, title, content, marshalImages(images)); err != nil {
+	if err := s.repo.UpdataByAuthorID(ctx, noteID, authorID, title, content, marshalImages(images), normalizeNoteType(noteType), strings.TrimSpace(videoURL)); err != nil {
 		return err
 	}
 	if s.topics != nil {

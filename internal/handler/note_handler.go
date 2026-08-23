@@ -29,6 +29,7 @@ type CreateNoteRequest struct {
 	Type    int      `json:"type"`
 	Images  []string `json:"images"`
 	Topics  []string `json:"topics"`
+	VideoURL string   `json:"video_url"`
 }
 type NoteResponse struct {
 	ID          int64     `json:"id"`
@@ -68,7 +69,7 @@ func (h *NoteHandler) Create(c *gin.Context) {
 		})
 		return
 	}
-	note, err := h.noteService.Create(userID, req.Title, req.Content, req.Images, req.Topics)
+	note, err := h.noteService.Create(userID, req.Title, req.Content, req.Images, req.Topics, req.Type, req.VideoURL)
 	if err != nil {
 		c.JSON(500, gin.H{
 			"code":    5002,
@@ -86,6 +87,7 @@ func (h *NoteHandler) Create(c *gin.Context) {
 			"content":      note.Content,
 			"images":       parseImages(note.Images),
 			"type":         note.Type,
+			"video_url":    note.VideoURL,
 			"published_at": note.PublishedAt,
 			"created_at":   note.CreatedAt,
 		},
@@ -124,6 +126,8 @@ func (h *NoteHandler) ListByUser(c *gin.Context) {
 			"title":        note.Title,
 			"content":      note.Content,
 			"images":       parseImages(note.Images),
+			"type":         note.Type,
+			"video_url":    note.VideoURL,
 			"published_at": note.PublishedAt,
 			"created_at":   note.CreatedAt,
 		})
@@ -191,6 +195,8 @@ func (h *NoteHandler) Detail(c *gin.Context) {
 			"title":          note.Title,
 			"content":        note.Content,
 			"images":         parseImages(note.Images),
+			"type":           note.Type,
+			"video_url":      note.VideoURL,
 			"published_at":   note.PublishedAt,
 			"created_at":     note.CreatedAt,
 			"like_count":     note.LikeCount,
@@ -493,6 +499,8 @@ func (h *NoteHandler) ListFavorites(c *gin.Context) {
 			"title":        note.Title,
 			"content":      note.Content,
 			"images":       parseImages(note.Images),
+			"type":         note.Type,
+			"video_url":    note.VideoURL,
 			"published_at": note.PublishedAt,
 			"created_at":   note.CreatedAt,
 		})
@@ -795,7 +803,7 @@ func (h *NoteHandler) Updata(c *gin.Context) {
 		})
 		return
 	}
-	err = h.noteService.Updata(c.Request.Context(), noteID, userID, req.Title, req.Content, req.Images, req.Topics)
+	err = h.noteService.Updata(c.Request.Context(), noteID, userID, req.Title, req.Content, req.Images, req.Topics, req.Type, req.VideoURL)
 	if err != nil {
 		if errors.Is(err, service.ErrEmptyNoteContent) {
 			c.JSON(http.StatusBadRequest, gin.H{
