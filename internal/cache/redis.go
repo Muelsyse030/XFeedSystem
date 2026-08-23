@@ -247,7 +247,9 @@ func (c *RedisCache) ZAddAll(ctx context.Context, key string, scores map[string]
 	for m, s := range scores {
 		pipe.ZAdd(ctx, key, redis.Z{Score: s, Member: m})
 	}
-	pipe.Expire(ctx, key, ttl)
+	if ttl > 0 {                    // ← 关键：ttl<=0 时不发 EXPIRE，key 永久保留
+		pipe.Expire(ctx, key, ttl)
+	}
 	_, err := pipe.Exec(ctx)
 	return err
 }
@@ -264,12 +266,25 @@ func (c *RedisCache) Exists(ctx context.Context, key string) (bool, error) {
 // ZAddFeed 批量写入打分 ZSET（score 为已折叠的整数分数，无并列）并设置 TTL
 func (c *RedisCache) ZAddFeed(ctx context.Context, key string, scores map[int64]int64, ttl time.Duration) error {
 	pipe := c.client.TxPipeline()
-	for _, s := range scores {
-		pipe.ZAdd(ctx, key, redis.Z{Score: float64(s), Member: strconv.FormatInt(s, 10)})
+	for id, s := range scores {
+		pipe.ZAdd(ctx, key, redis.Z{Score: float64(s), Member: strconv.FormatInt(id, 10)})
 	}
-	pipe.Expire(ctx, key, ttl)
+	if ttl > 0 {                    // ← 关键：ttl<=0 时不发 EXPIRE，key 永久保留
+		pipe.Expire(ctx, key, ttl)
+	}
 	_, err := pipe.Exec(ctx)
 	return err
+}
+
+func (c *RedisCache) ZAddNote(ctx context.Context, key string, noteID int64, folded int64) error {
+	return c.client.ZAdd(ctx, key, redis.Z{
+		Score:  float64(folded),
+		Member: strconv.FormatInt(noteID, 10),
+	}).Err()
+}
+
+func (c *RedisCache) ZRemNote(ctx context.Context, key string, noteID int64) error {
+	return c.client.ZRem(ctx, key, strconv.FormatInt(noteID, 10)).Err()
 }
 
 // ZRevRangeByScore 按分数逆序取区间（max/min 支持 "(score" 排他语法）

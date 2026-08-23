@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/pprof"
 	"os"
+	"time"
 
 	"XFeedSystem/internal/cache"
 	"XFeedSystem/internal/handler"
@@ -54,17 +55,22 @@ func SetupRouter(db *gorm.DB, appCfg config.Config) *gin.Engine {
 
 	userService := service.NewUserService(userRepo, redisCache, notifService, blockService)
 	userHandler := handler.NewUserHandler(userService, jwtService, redisCache)
+
 	statsRepo := repo.NewGormStatsRepo(db)
 	statsService := service.NewStatsService(statsRepo, redisCache)
 	statsService.StartFlusher(context.Background())
 
-	noteRepo := repo.NewGormNoteRepo(db)
-	noteService := service.NewNoteService(noteRepo, redisCache, searchRepo, notifService, blockService, topicService)
-	noteHandler := handler.NewNoteHandler(noteService, userRepo, redisCache, statsService)
 	feedRepo := repo.NewGormFeedRepo(db)
 	feedService := service.NewFeedService(feedRepo, userRepo, redisCache, searchRepo, blockService, statsService)
+	feedService.StartRescorer(context.Background(), 5*time.Minute)
 	feedHandler := handler.NewFeedHandler(feedService, redisCache)
+
+	noteRepo := repo.NewGormNoteRepo(db)
+	noteService := service.NewNoteService(noteRepo, redisCache, searchRepo,notifService, blockService, topicService, feedService)
+	noteHandler := handler.NewNoteHandler(noteService, userRepo, redisCache, statsService)
+
 	topicHandler := handler.NewTopicHandler(topicService, feedService, redisCache)
+
 	storageService, err := service.NewStorageService(appCfg)
 	if err != nil {
 		logger.Sugar.Warnf("warn: init oss storage: %v", err)

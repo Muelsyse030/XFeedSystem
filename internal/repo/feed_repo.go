@@ -26,6 +26,7 @@ type FeedRepo interface {
 	ListByTopic(ctx context.Context, topicID int64, cursor *model.FeedCursor, limit int) ([]*model.Note, error)
 	GetUserTypePreference(ctx context.Context, userID int64) (map[int8]float64, error)
 	GetNoteAuthorIDs(ctx context.Context, noteIDs []int64) (map[int64]int64, error)
+	GetScoringFields(ctx context.Context , noteID int64) (*model.Note , error)
 }
 
 func (r *GormFeedRepo) ListForYou(ctx context.Context, cursor *model.FeedCursor, limit int) ([]*model.Note, error) {
@@ -225,4 +226,35 @@ func (r *GormFeedRepo) GetNoteAuthorIDs(ctx context.Context, noteIDs []int64) (m
 		out[row.ID] = row.AuthorID
 	}
 	return out, nil
+}
+
+func (r *GormFeedRepo) GetNoteTypes(ctx context.Context, noteIDs []int64) (map[int64]int8, error) {
+	out := make(map[int64]int8)
+	if len(noteIDs) == 0 {
+		return out, nil
+	}
+	var rows []struct {
+		ID   int64
+		Type int8
+	}
+	if err := r.db.WithContext(ctx).Model(&model.Note{}).
+		Select("id", "type").Where("id IN ?", noteIDs).Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		out[row.ID] = row.Type
+	}
+	return out, nil
+}
+
+func (r *GormFeedRepo) GetScoringFields(ctx context.Context , noteID int64) (*model.Note , error) {
+	var note model.Note
+	err := r.db.WithContext(ctx).Model(&model.Note{}).
+	Select("id", "author_id", "type", "like_count", "favorite_count", "comment_count", "published_at").
+	Where("id = ? AND status = ?", noteID, model.NoteStatusPublished).
+	First(&note).Error
+	if err != nil {
+		return nil ,err
+	}
+	return &note , nil
 }

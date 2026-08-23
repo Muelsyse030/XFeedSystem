@@ -51,27 +51,28 @@ type NoteService struct {
 	notifSvc *NotificationService
 	block    *BlockService
 	topics   *TopicService
+	feed 	 *FeedService
 }
 
 const noteCacheTTL = 10 * time.Minute
 const authorNotesCacheTTL = 5 * time.Minute
 
-func NewNoteService(r repo.NoteRepo, c *cache.RedisCache, sr *repo.SearchRepo, ns *NotificationService, b *BlockService, t *TopicService) *NoteService {
-	return &NoteService{repo: r, cache: c, search: sr, notifSvc: ns, block: b, topics: t}
+func NewNoteService(r repo.NoteRepo, c *cache.RedisCache, sr *repo.SearchRepo,
+	ns *NotificationService, b *BlockService, t *TopicService, f *FeedService) *NoteService {
+	return &NoteService{repo: r, cache: c, search: sr, notifSvc: ns, block: b, topics: t, feed: f}
 }
 
 // invalidateNoteFeed 笔记级写操作后的缓存失效：
 //   - 同步删笔记 JSON + 详情字节缓存（精确 key，立刻生效）
 //   - 异步失效全量打分引擎 + feed 页字节缓存（需 SCAN，不阻塞写响应）
 func (s *NoteService) invalidateNoteFeed(ctx context.Context, noteID int64) {
-	if s.cache == nil {
-		return
+	if s.cache != nil {
+		_ = s.cache.Delete(ctx, cache.NoteKey(noteID), cache.NoteDetailRawKey(noteID))
+		_ = s.cache.InvalidateFeedRawAll(ctx) // 页字节缓存仍要删
 	}
-	_ = s.cache.Delete(ctx, cache.NoteKey(noteID), cache.NoteDetailRawKey(noteID))
-	safeGo(func() {
-		_ = s.cache.InvalidateFeedEngineAll(context.Background())
-		_ = s.cache.InvalidateFeedRawAll(context.Background())
-	})
+	if s.feed != nil {
+		_ = s.feed.UpsertNoteScore(ctx, noteID) // 单条 ZADD，替代 InvalidateFeedEngineAll
+	}
 }
 
 func (s *NoteService) Create(userID int64, title, content string, images []string, topics []string) (*model.Note, error) {

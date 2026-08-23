@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"math"
+	"sort"
 	"strconv"
 	"sync"
 	"time"
@@ -22,6 +23,7 @@ const (
 type scoredFeedItem struct {
 	ID       int64
 	Score    float64
+	BaseScore float64
 	AuthorID int64
 }
 
@@ -120,10 +122,10 @@ func (s *FeedService) ListForYou(ctx context.Context, cursorStr string, limit in
 	}
 	// 下一页游标 = 本页最后一条（过滤后）的 score + id
 	lastNote := ordered[len(ordered)-1]
-	lastScore := page[len(page)-1].Score
+	lastScore := page[len(page)-1].BaseScore
 	for _, it := range page {
 		if it.ID == lastNote.ID {
-			lastScore = it.Score
+			lastScore = it.BaseScore
 			break
 		}
 	}
@@ -147,9 +149,22 @@ func (s *FeedService) ListTopic(ctx context.Context, topicID int64, cursorStr st
 
 // getFeedPage 从打分 ZSET 取一页（score 逆序，同分按 id 逆序）
 func (s *FeedService) getFeedPage(ctx context.Context, userID int64, cursorScore float64, cursorID int64, limit int) ([]scoredFeedItem, error) {
-	key := cache.FeedEngineKey(userID)
-	if err := s.ensureFeedEngine(ctx, userID, key); err != nil {
+	key := cache.FeedEngineKey(0) // 统一读全局基础分，不再每用户一份
+	if err := s.ensureFeedEngine(ctx, key); err != nil {
 		return nil, err
+	}
+
+	// 读时个性化（只对抓出来的小窗口生效，成本 O(fetchSize)）
+	var followingSet map[int64]bool
+	var typePref map[int8]float64
+	if userID > 0 {
+		if ids, err := s.getFollowingIDs(ctx, userID); err == nil {
+			followingSet = make(map[int64]bool, len(ids))
+			for _, id := range ids {
+				followingSet[id] = true
+			}
+		}
+		typePref, _ = s.repo.GetUserTypePreference(ctx, userID)
 	}
 
 	max := "+inf"
@@ -179,25 +194,38 @@ func (s *FeedService) getFeedPage(ctx context.Context, userID int64, cursorScore
 			if !ok {
 				continue
 			}
-			v, err := strconv.ParseInt(member, 10, 64)
+			id, err := strconv.ParseInt(member, 10, 64) // member 现在是笔记ID
 			if err != nil {
 				continue
 			}
-			score, id := unfoldScore(v)
+			score, _ := unfoldScore(int64(z.Score)) // 从 ZSET score 解出分数
 			ids = append(ids, id)
-			candidates = append(candidates, scoredFeedItem{ID: id, Score: score})
+			candidates = append(candidates, scoredFeedItem{ID: id, Score: score , BaseScore: score})
 		}
 
 		authorByNote, _ := s.repo.GetNoteAuthorIDs(ctx, ids)
+		typeByNote, _ := s.repo.GetNoteTypes(ctx, ids)
+
+		// 读时个性化：乘关注/类型偏好后重排这一批
+		for i := range candidates {
+			it := &candidates[i]
+			authorID := authorByNote[it.ID]
+			it.Score = personalizedScore(it.Score, authorID, typeByNote[it.ID], followingSet, typePref)
+			it.AuthorID = authorID
+		}
+		sort.Slice(candidates, func(i, j int) bool {
+			if candidates[i].Score != candidates[j].Score {
+				return candidates[i].Score > candidates[j].Score
+			}
+			return candidates[i].ID > candidates[j].ID
+		})
 
 		for _, it := range candidates {
-			authorID := authorByNote[it.ID]
-			if authorCount[authorID] >= maxPerAuthor {
+			if authorCount[it.AuthorID] >= maxPerAuthor {
 				continue
 			}
-			it.AuthorID = authorID
 			out = append(out, it)
-			authorCount[authorID]++
+			authorCount[it.AuthorID]++
 			if len(out) >= limit {
 				break
 			}
@@ -208,12 +236,11 @@ func (s *FeedService) getFeedPage(ctx context.Context, userID int64, cursorScore
 			break
 		}
 	}
-
 	return out, nil
 }
 
 // ensureFeedEngine 保证打分 ZSET 存在（不存在则重建，同用户单飞防惊群）
-func (s *FeedService) ensureFeedEngine(ctx context.Context, userID int64, key string) error {
+func (s *FeedService) ensureFeedEngine(ctx context.Context, key string) error {
 	ok, err := s.cache.Exists(ctx, key)
 	if err != nil {
 		return err
@@ -221,49 +248,36 @@ func (s *FeedService) ensureFeedEngine(ctx context.Context, userID int64, key st
 	if ok {
 		return nil
 	}
-	lock := engineLockFor(userID)
+	lock := engineLockFor(0)
 	lock.Lock()
 	defer lock.Unlock()
 	ok, _ = s.cache.Exists(ctx, key)
 	if ok {
 		return nil
 	}
-	return s.buildFeedEngine(ctx, userID, key)
+	return s.buildFeedEngine(ctx, key)
 }
 
 // buildFeedEngine 全量重建打分 ZSET（全部已发布笔记，含用户关注/类型偏好加权）
-func (s *FeedService) buildFeedEngine(ctx context.Context, userID int64, key string) error {
+func (s *FeedService) buildFeedEngine(ctx context.Context, key string) error {
 	notes, err := s.repo.ListAllPublished(ctx)
 	if err != nil {
 		return err
 	}
-
-	var followingSet map[int64]bool
-	var typePref map[int8]float64
-	if userID > 0 {
-		if ids, err := s.getFollowingIDs(ctx, userID); err == nil {
-			followingSet = make(map[int64]bool, len(ids))
-			for _, id := range ids {
-				followingSet[id] = true
-			}
-		}
-		typePref, _ = s.repo.GetUserTypePreference(ctx, userID)
-	}
-
 	now := time.Now()
 	scores := make(map[int64]int64, len(notes))
 	var stats map[int64]*model.NoteStats
 	if s.stats != nil {
-		noteIDs := make([]int64, len(notes))
+		ids := make([]int64, len(notes))
 		for i, n := range notes {
-			noteIDs[i] = n.ID
+			ids[i] = n.ID
 		}
-		stats, _ = s.stats.GetStatsMap(ctx, noteIDs)
+		stats, _ = s.stats.GetStatsMap(ctx, ids)
 	}
 	for _, n := range notes {
-		scores[n.ID] = foldScore(computeScore(n, now, followingSet, typePref, stats), n.ID)
+		scores[n.ID] = foldScore(baseScore(n, now, stats[n.ID]), n.ID)
 	}
-	return s.cache.ZAddFeed(ctx, key, scores, feedEngineTTL)
+	return s.cache.ZAddFeed(ctx, key, scores, 0) // 0 = 不过期，靠写路径增量维护
 }
 
 func (s *FeedService) buildFeedResponse(ctx context.Context, notes []*model.Note) (*FeedListResponse, error) {
@@ -483,4 +497,63 @@ func (s *FeedService) filterBlockedNotes(ctx context.Context, userID int64, note
 		}
 	}
 	return filtered
+}
+//增量：新笔记/互动后，单条写入全局基础分 ZSET
+func (s *FeedService) UpsertNoteScore(ctx context.Context , noteID int64) error {
+	note , err := s.repo.GetScoringFields(ctx , noteID)
+	if err != nil {
+		return err
+	}
+	var st *model.NoteStats
+	if s.stats != nil {
+		if m, _ := s.stats.GetStatsMap(ctx, []int64{noteID}); m != nil {
+			st = m[noteID]
+		}
+	}
+	sc := baseScore(note, time.Now(), st)
+	return s.cache.ZAddNote(ctx, cache.FeedEngineKey(0), noteID, foldScore(sc, noteID))
+}
+//删笔记时单条移除
+func (s *FeedService) RemoveNoteScore(ctx context.Context, noteID int64) error {
+	return s.cache.ZRemNote(ctx, cache.FeedEngineKey(0), noteID)
+}
+//只重算 24h 内新笔记池
+func (s *FeedService) RescoreRecentNotes(ctx context.Context) error {
+	since := time.Now().Add(-DecayFreezeHours * time.Hour)
+	notes, err := s.repo.ListSince(ctx, since, 5000) // 复用已有 ListSince
+	if err != nil {
+		return err
+	}
+	if s.cache == nil || len(notes) == 0 {
+		return nil
+	}
+	now := time.Now()
+	ids := make([]int64, len(notes))
+	for i, n := range notes {
+		ids[i] = n.ID
+	}
+	var statsMap map[int64]*model.NoteStats
+	if s.stats != nil {
+		statsMap, _ = s.stats.GetStatsMap(ctx, ids)
+	}
+	for _, n := range notes {
+		sc := baseScore(n, now, statsMap[n.ID])
+		_ = s.cache.ZAddNote(ctx, cache.FeedEngineKey(0), n.ID, foldScore(sc, n.ID))
+	}
+	return nil
+}
+// 后台周期重算（替代 60s 全量重建）
+func (s *FeedService) StartRescorer(ctx context.Context, interval time.Duration) {
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				_ = s.RescoreRecentNotes(ctx)
+			}
+		}
+	}()
 }
