@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -164,6 +165,29 @@ func (h *UserHandler) GetProfile(c *gin.Context) {
 		_ = h.cache.Set(c.Request.Context(), cache.UserProfileRawKey(uid), string(body), 60*time.Second)
 	}
 	c.Data(http.StatusOK, "application/json; charset=utf-8", body)
+}
+
+// Search 按用户名前缀搜索用户（发起私信用）
+func (h *UserHandler) Search(c *gin.Context) {
+	keyword := strings.TrimSpace(c.Query("username"))
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "10"))
+
+	users, err := h.userService.Search(c.Request.Context(), keyword, limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 5001, "message": "search users failed"})
+		return
+	}
+
+	list := make([]gin.H, 0, len(users))
+	for _, u := range users {
+		list = append(list, gin.H{
+			"id":         u.ID,
+			"username":   u.Username,
+			"avatar_url": u.AvatarURL,
+			"bio":        u.Bio,
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "ok", "data": gin.H{"list": list}})
 }
 
 func (h *UserHandler) Follow(c *gin.Context) {

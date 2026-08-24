@@ -66,12 +66,16 @@ func SetupRouter(db *gorm.DB, appCfg config.Config) *gin.Engine {
 	feedHandler := handler.NewFeedHandler(feedService, redisCache)
 
 	noteRepo := repo.NewGormNoteRepo(db)
-	noteService := service.NewNoteService(noteRepo, redisCache, searchRepo,notifService, blockService, topicService, feedService)
+	noteService := service.NewNoteService(noteRepo, redisCache, searchRepo, notifService, blockService, topicService, feedService)
 	noteHandler := handler.NewNoteHandler(noteService, userRepo, redisCache, statsService)
 
 	topicHandler := handler.NewTopicHandler(topicService, feedService, redisCache)
 
 	storageService, err := service.NewStorageService(appCfg)
+
+	messageService := service.NewMessageService(repo.NewGormMessageRepo(db), userRepo, blockService)
+	messageHandler := handler.NewMessageHandler(messageService)
+
 	if err != nil {
 		logger.Sugar.Warnf("warn: init oss storage: %v", err)
 		storageService = &service.StorageService{} // 降级为空服务，避免 nil panic
@@ -124,6 +128,7 @@ func SetupRouter(db *gorm.DB, appCfg config.Config) *gin.Engine {
 	{
 		auth.GET("/me", userHandler.Me)
 		auth.PATCH("/me/updata", userHandler.Updata)
+		auth.GET("/users/search", userHandler.Search)
 		auth.POST("/notes", noteHandler.Create)
 		auth.DELETE("/notes/:id", noteHandler.Delete)
 		auth.PATCH("/notes/updata/:id", noteHandler.Updata)
@@ -152,6 +157,13 @@ func SetupRouter(db *gorm.DB, appCfg config.Config) *gin.Engine {
 
 		auth.POST("/upload/image", uploadHandler.Image)
 		auth.POST("/upload/video", uploadHandler.Video)
+
+		auth.POST("/messages", messageHandler.Send)
+		auth.GET("/conversations", messageHandler.Conversations)
+		auth.GET("/messages", messageHandler.ListWithPeer)    // ?peer_id=&cursor=&limit=
+		auth.PATCH("/messages/read", messageHandler.MarkRead) // {peer_id}
+		auth.GET("/messages/unread-count", messageHandler.UnreadCount)
+		auth.DELETE("/messages/:id", messageHandler.Delete)
 	}
 
 	admin := auth.Group("/admin")

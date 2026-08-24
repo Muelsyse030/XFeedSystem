@@ -90,6 +90,12 @@ func (s *NoteService) Create(userID int64, title, content string, images []strin
 	if err := ValidateNoteContent(title, normalized, format); err != nil {
 		return nil, err
 	}
+	// 没单独上传图片时，自动把正文第一张图作为封面
+	if len(images) == 0 && format == ContentFormatRich {
+		if cover := ExtractFirstImage(normalized); cover != "" {
+			images = []string{cover}
+		}
+	}
 
 	imagesJSON := marshalImages(images)
 	note := &model.Note{
@@ -421,6 +427,12 @@ func (s *NoteService) Updata(ctx context.Context, noteID, authorID int64, title,
 	normalized, format := NormalizeContent(content, contentFormat)
 	if err := ValidateNoteContent(title, normalized, format); err != nil {
 		return err
+	}
+	// 没单独上传图片时，自动把正文第一张图作为封面
+	if len(images) == 0 && format == ContentFormatRich {
+		if cover := ExtractFirstImage(normalized); cover != "" {
+			images = []string{cover}
+		}
 	}
 	if err := s.repo.UpdataByAuthorID(ctx, noteID, authorID,
 		strings.TrimSpace(title), normalized, marshalImages(images),

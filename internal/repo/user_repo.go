@@ -23,6 +23,7 @@ type UserRepo interface {
 	Updata(ctx context.Context, userID int64, avatarURL string, bio string) error
 	ListFollowing(ctx context.Context, userID int64, cursor time.Time, limit int) ([]*model.Follow, error)
 	ListFollowers(ctx context.Context, userId int64, cursor time.Time, limit int) ([]*model.Follow, error)
+	SearchByUsername(ctx context.Context, keyword string, limit int) ([]*model.User, error)
 }
 type GormUserRepo struct {
 	db *gorm.DB
@@ -32,6 +33,20 @@ func NewGormUserRepo(db *gorm.DB) *GormUserRepo {
 	return &GormUserRepo{
 		db: db,
 	}
+}
+
+// SearchByUsername 按用户名前缀搜索正常状态用户（发起站内信用）
+func (r *GormUserRepo) SearchByUsername(ctx context.Context, keyword string, limit int) ([]*model.User, error) {
+	if limit <= 0 || limit > 20 {
+		limit = 10
+	}
+	var users []*model.User
+	err := r.db.WithContext(ctx).
+		Where("username LIKE ? AND status = 1", keyword+"%").
+		Order("id ASC").
+		Limit(limit).
+		Find(&users).Error
+	return users, err
 }
 
 func (r *GormUserRepo) FindByUsername(username string) (*model.User, error) {

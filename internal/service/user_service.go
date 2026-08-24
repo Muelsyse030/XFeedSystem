@@ -6,6 +6,7 @@ import (
 	"XFeedSystem/internal/repo"
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
@@ -30,6 +31,22 @@ type FollowUserItem struct {
 	AvatarURL  string `json:"avatar_url"`
 	Bio        string `json:"bio"`
 	IsFollowed bool   `json:"is_followed"`
+}
+
+// Search 按用户名前缀搜索用户（清空密码哈希后返回）
+func (s *UserService) Search(ctx context.Context, keyword string, limit int) ([]*model.User, error) {
+	keyword = strings.TrimSpace(keyword)
+	if keyword == "" {
+		return []*model.User{}, nil
+	}
+	users, err := s.repo.SearchByUsername(ctx, keyword, limit)
+	if err != nil {
+		return nil, err
+	}
+	for _, u := range users {
+		u.PasswordHash = ""
+	}
+	return users, nil
 }
 
 type FollowListResponse struct {
@@ -126,7 +143,7 @@ func (s *UserService) Follow(ctx context.Context, userID int64, followID int64) 
 	if s.notifSvc != nil {
 		safeGo(func() {
 			s.notifSvc.Create(context.Background(), userID, followID,
-				model.NotifTypeFollow, followID, 0, "关注了你")
+				model.NotifTypeFollow, userID, 0, "关注了你")
 		})
 	}
 	return nil

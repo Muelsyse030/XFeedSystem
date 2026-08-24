@@ -1,6 +1,7 @@
 package service
 
 import (
+	"regexp"
 	"strings"
 	"unicode/utf8"
 
@@ -20,8 +21,21 @@ const (
 
 var richTextPolicy = bluemonday.UGCPolicy()
 
+// 清洗后的 HTML 里 img 属性是双引号格式，直接匹配 src="..."
+var imgSrcRe = regexp.MustCompile(`<img[^>]*\ssrc="([^"]+)"`)
+
 func SanitizeRichContent(content string) string {
 	return richTextPolicy.Sanitize(content)
+}
+
+// ExtractFirstImage 从清洗后的富文本中提取第一张图片 URL，取不到返回空串。
+// 用于"没单独上传图片时，自动把正文第一张图作为封面"。
+func ExtractFirstImage(html string) string {
+	m := imgSrcRe.FindStringSubmatch(html)
+	if len(m) == 2 {
+		return m[1]
+	}
+	return ""
 }
 
 func NormalizeContent(content string, format int) (string, int8) {
