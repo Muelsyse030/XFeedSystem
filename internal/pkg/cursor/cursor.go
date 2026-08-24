@@ -6,10 +6,13 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"html"
+	"regexp"
 
 	"XFeedSystem/internal/model"
 )
 
+var tagRe = regexp.MustCompile(`<[^>]*>`)
 func EncodeFeedCursor(t time.Time, id int64) string {
 	// 使用纳秒精度，避免 published_at 带毫秒/微秒时游标截断导致翻页漏数据
 	return fmt.Sprintf("%d_%d", t.UnixNano(), id)
@@ -67,4 +70,10 @@ func BuildSummary(content string, max int) string {
 		return content
 	}
 	return string(runes[:max]) + "..."
+}
+
+func StripHTML(src string) string {
+	s := tagRe.ReplaceAllString(src," ")
+	s = html.UnescapeString(s)
+	return strings.Join(strings.Fields(s), " ")
 }

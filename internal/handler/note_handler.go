@@ -24,18 +24,21 @@ type NoteHandler struct {
 	stats		*service.StatsService
 }
 type CreateNoteRequest struct {
-	Title   string   `json:"title"`
-	Content string   `json:"content"`
-	Type    int      `json:"type"`
-	Images  []string `json:"images"`
-	Topics  []string `json:"topics"`
-	VideoURL string   `json:"video_url"`
+	Title         string   `json:"title"`
+	Content       string   `json:"content"`
+	Type          int      `json:"type"`
+	Images        []string `json:"images"`
+	Topics        []string `json:"topics"`
+	VideoURL      string   `json:"video_url"`
+	ContentFormat int      `json:"content_format"`
 }
+
 type NoteResponse struct {
 	ID          int64     `json:"id"`
 	AuthorID    int64     `json:"author_id"`
 	Title       string    `json:"title"`
 	Content     string    `json:"content"`
+	ContentFormat int8 `json:"content_format"`
 	PublishedAt time.Time `json:"published_at"`
 	CreatedAt   time.Time `json:"created_at"`
 }
@@ -69,12 +72,13 @@ func (h *NoteHandler) Create(c *gin.Context) {
 		})
 		return
 	}
-	note, err := h.noteService.Create(userID, req.Title, req.Content, req.Images, req.Topics, req.Type, req.VideoURL)
+	note, err := h.noteService.Create(userID, req.Title, req.Content, req.Images, req.Topics,req.Type, req.VideoURL, req.ContentFormat)
 	if err != nil {
-		c.JSON(500, gin.H{
-			"code":    5002,
-			"message": err.Error(),
-		})
+		if errors.Is(err, service.ErrEmptyNoteContent) || errors.Is(err, service.ErrContentTooLong) {
+			c.JSON(http.StatusBadRequest, gin.H{"code": 4003, "message": err.Error()})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 5002, "message": err.Error()})
 		return
 	}
 	c.JSON(200, gin.H{
@@ -86,6 +90,7 @@ func (h *NoteHandler) Create(c *gin.Context) {
 			"title":        note.Title,
 			"content":      note.Content,
 			"images":       parseImages(note.Images),
+			"content_format": note.ContentFormat,
 			"type":         note.Type,
 			"video_url":    note.VideoURL,
 			"published_at": note.PublishedAt,
@@ -125,6 +130,7 @@ func (h *NoteHandler) ListByUser(c *gin.Context) {
 			"author_id":    note.AuthorID,
 			"title":        note.Title,
 			"content":      note.Content,
+			"content_format": note.ContentFormat,
 			"images":       parseImages(note.Images),
 			"type":         note.Type,
 			"video_url":    note.VideoURL,
@@ -194,6 +200,7 @@ func (h *NoteHandler) Detail(c *gin.Context) {
 			"author_id":      note.AuthorID,
 			"title":          note.Title,
 			"content":        note.Content,
+			"content_format": note.ContentFormat,
 			"images":         parseImages(note.Images),
 			"type":           note.Type,
 			"video_url":      note.VideoURL,
@@ -498,6 +505,7 @@ func (h *NoteHandler) ListFavorites(c *gin.Context) {
 			"author_id":    note.AuthorID,
 			"title":        note.Title,
 			"content":      note.Content,
+			"content_format": note.ContentFormat,
 			"images":       parseImages(note.Images),
 			"type":         note.Type,
 			"video_url":    note.VideoURL,
@@ -803,7 +811,7 @@ func (h *NoteHandler) Updata(c *gin.Context) {
 		})
 		return
 	}
-	err = h.noteService.Updata(c.Request.Context(), noteID, userID, req.Title, req.Content, req.Images, req.Topics, req.Type, req.VideoURL)
+	err = h.noteService.Updata(c.Request.Context(), noteID, userID, req.Title, req.Content, req.Images, req.Topics, req.Type, req.VideoURL, req.ContentFormat)
 	if err != nil {
 		if errors.Is(err, service.ErrEmptyNoteContent) {
 			c.JSON(http.StatusBadRequest, gin.H{

@@ -306,11 +306,15 @@ func (s *FeedService) buildFeedResponse(ctx context.Context, notes []*model.Note
 	nextCursor := ""
 
 	for _, note := range notes {
+		summary := note.Content
+		if note.ContentFormat == ContentFormatRich {
+		summary = cursor.StripHTML(summary)
+		}
 		item := model.FeedItem{
 			ID:          note.ID,
 			AuthorID:    note.AuthorID,
 			Title:       note.Title,
-			Content:     cursor.BuildSummary(note.Content, 120),
+			Content:     cursor.BuildSummary(summary, 120),
 			Images:      parseFeedImages(note.Images),
 			Type:        note.Type,
 			VideoURL:    note.VideoURL,

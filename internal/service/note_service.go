@@ -3,6 +3,7 @@ package service
 import (
 	"XFeedSystem/internal/cache"
 	"XFeedSystem/internal/model"
+	"XFeedSystem/internal/pkg/cursor"
 	"XFeedSystem/internal/pkg/logger"
 	"XFeedSystem/internal/repo"
 	"context"
@@ -23,6 +24,7 @@ var (
 	ErrCommentNotFound  = errors.New("comment not found")
 	ErrEmptyNoteContent = errors.New("title and content must not be empty")
 	ErrBlocked          = errors.New("无法互动：你已拉黑对方或被对方拉黑")
+	ErrContentTooLong = errors.New("content too long")
 )
 
 func safeGo(fn func()) {
@@ -83,23 +85,31 @@ func normalizeNoteType(t int) int8 {
 	return 1
 }
 
-func (s *NoteService) Create(userID int64, title, content string, images []string, topics []string, noteType int, videoURL string) (*model.Note, error) {
+func (s *NoteService) Create(userID int64, title, content string, images []string, topics []string, noteType int, videoURL string, contentFormat int) (*model.Note, error) {
+	normalized, format := NormalizeContent(content, contentFormat)
+	if err := ValidateNoteContent(title, normalized, format); err != nil {
+		return nil, err
+	}
+
 	imagesJSON := marshalImages(images)
 	note := &model.Note{
-		AuthorID:    userID,
-		Title:       title,
-		Content:     content,
-		Images:      imagesJSON,
-		Type:        normalizeNoteType(noteType),
-		VideoURL:    strings.TrimSpace(videoURL),
-		PublishedAt: time.Now(),
+		AuthorID:      userID,
+		Title:         strings.TrimSpace(title),
+		Content:       normalized,
+		Images:        imagesJSON,
+		Type:          normalizeNoteType(noteType),
+		VideoURL:      strings.TrimSpace(videoURL),
+		ContentFormat: format,
+		PublishedAt:   time.Now(),
 	}
 	if _, err := s.repo.Create(note); err != nil {
 		return nil, err
 	}
+
+	// 话题识别用纯文本，避免匹配到 HTML 属性里的 #xx
 	if s.topics != nil {
 		if err := s.topics.AttachToNote(context.Background(), note.ID,
-			s.topics.ExtractTopics(content, topics)); err != nil {
+			s.topics.ExtractTopics(cursor.StripHTML(normalized), topics)); err != nil {
 			logger.Sugar.Errorf("attach topics err: %v", err)
 		}
 	}
@@ -122,7 +132,7 @@ func (s *NoteService) Create(userID int64, title, content string, images []strin
 				ID:          n.ID,
 				AuthorID:    n.AuthorID,
 				Title:       n.Title,
-				Content:     n.Content,
+				Content:     cursor.StripHTML(n.Content),
 				Type:        n.Type,
 				PublishedAt: n.PublishedAt.Unix(),
 			})
@@ -401,21 +411,25 @@ func (s *NoteService) DeleteComment(ctx context.Context, commentID int64, userID
 	s.invalidateNoteFeed(ctx, comment.NoteID)
 	return nil
 }
-func (s *NoteService) Updata(ctx context.Context, noteID, authorID int64, title, content string, images []string, topics []string, noteType int, videoURL string) error {
+func (s *NoteService) Updata(ctx context.Context, noteID, authorID int64, title, content string, images []string, topics []string, noteType int, videoURL string, contentFormat int) error {
 	if noteID <= 0 {
 		return ErrInvalidNoteID
 	}
 	if authorID <= 0 {
 		return ErrInvalidUserID
 	}
-	if strings.TrimSpace(title) == "" || strings.TrimSpace(content) == "" {
-		return ErrEmptyNoteContent
+	normalized, format := NormalizeContent(content, contentFormat)
+	if err := ValidateNoteContent(title, normalized, format); err != nil {
+		return err
 	}
-	if err := s.repo.UpdataByAuthorID(ctx, noteID, authorID, title, content, marshalImages(images), normalizeNoteType(noteType), strings.TrimSpace(videoURL)); err != nil {
+	if err := s.repo.UpdataByAuthorID(ctx, noteID, authorID,
+		strings.TrimSpace(title), normalized, marshalImages(images),
+		normalizeNoteType(noteType), strings.TrimSpace(videoURL), format); err != nil {
 		return err
 	}
 	if s.topics != nil {
-		if err := s.topics.ReplaceTopics(ctx, noteID, s.topics.ExtractTopics(content, topics)); err != nil {
+		if err := s.topics.ReplaceTopics(ctx, noteID,
+			s.topics.ExtractTopics(cursor.StripHTML(normalized), topics)); err != nil {
 			logger.Sugar.Errorf("replace topics err: %v", err)
 		}
 	}
@@ -435,18 +449,16 @@ func (s *NoteService) Updata(ctx context.Context, noteID, authorID int64, title,
 			_ = s.search.Index(context.Background(), &repo.NoteDocument{
 				ID:          noteID,
 				Title:       title,
-				Content:     content,
+				Content:     cursor.StripHTML(normalized),
 				AuthorID:    authorID,
 				PublishedAt: time.Now().Unix(),
 			})
 		})
 	}
-
 	safeGo(func() {
 		_ = s.cache.InvalidateFeedEngineAll(context.Background())
 		_ = s.cache.InvalidateFeedRawAll(context.Background())
 	})
-	
 	return nil
 }
 
