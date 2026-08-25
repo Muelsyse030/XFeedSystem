@@ -1,6 +1,6 @@
 # XFeedSystem
 
-发现型内容社区后端 API。基于 Go + Gin，自带 **Feed 打分引擎**（Redis ZSET）、全文搜索（Meilisearch）、关注/点赞/评论/收藏、通知与管理员后台，前端为 React SPA（`xfeed-discover-page-source`）。
+发现型内容社区后端 API。基于 Go + Gin，自带 **Feed 打分引擎**（Redis ZSET）、全文搜索（Meilisearch），支持笔记（富文本/视频）、关注/点赞/评论/收藏、通知、拉黑、站内信、举报与管理员后台，前端为 React SPA（`xfeed-discover-page-source`）。
 
 ## 技术栈
 
@@ -27,14 +27,29 @@ graph LR
 
 ## 核心设计：Feed 引擎
 
-`foryou` feed 采用 **Redis ZSET 预计算打分 + 游标分页**：
+`foryou` feed 采用 **全局基础分 ZSET + 读时个性化 + 位置偏移分页**：
 
-- 全部已发布笔记参与打分，无候选池上限，任意深度都可翻到。
-- 打分公式（`internal/service/feed_scorer.go`）：互动量（点赞×3 + 收藏×5 + 评论×4）× 时间衰减 × 关注加权 × 类型偏好。
-- 分数折叠：`zsetScore = round(score×10000)×10⁶ + id`，ZSET 内无同分并列，分页用 `ZREVRANGEBYSCORE key "(cursor"` 一条命令完成，O(log n)。
-- 匿名用户共享全局 ZSET（`feed:engine:v1:0`），登录用户按关注/类型偏好构建个人 ZSET。
-- 懒重建：TTL 60s，重建时每用户 singleflight 防惊群。
+- 全部已发布笔记在共享 ZSET（`feed:engine:v1:0`）中维护基础分，无候选池上限。
+- 基础分（`internal/service/feed_scorer.go`）：互动量（点赞×3 + 收藏×5 + 评论×4）× 时间衰减（24h 冻结）× 关注加权 × 类型偏好 + 新笔记保底热度（48h 内线性衰减，零互动也能进首页）+ CTR 加成（阅读/曝光）。
+- 分数折叠：`zsetScore = round(score×10000)×10⁶ + id`，ZSET 内无同分并列，`ZREVRANGEBYSCORE` 一条命令读全量候选。
+- 读时个性化：按当前用户的关注关系与类型偏好重算每条笔记分数后排序，再依次做拉黑过滤、作者去重（每作者最多 2 条、自己不限量），最后按**位置偏移游标**分页——个性化排序与基础分顺序不一致时也不会漏内容。
+- 懒重建：TTL 60s，重建时 singleflight 防惊群；每 5 分钟后台重算热门笔记。
+- 写操作同步维护：发布笔记 `ZADD` 单条、删除笔记 `ZREM` 即时移除；点赞/收藏/评论等会主动失效引擎与页缓存，TTL 兜底。
 - 多级缓存：首页/翻页/详情/主页响应以**原始字节**缓存于 Redis（TTL 10-60s），命中时零序列化直接返回。
+
+> 当前全量候选 + 排序面向百级笔记规模；笔记量级再上一个台阶后，可改为增量维护的排序结构。
+
+## 核心功能
+
+| 功能 | 说明 |
+|---|---|
+| 笔记 | 富文本（白名单清洗）/ 视频 / 多图；正文首图自动作为封面 |
+| 互动 | 点赞、收藏、评论、关注、拉黑 |
+| 搜索 | Meilisearch 全文搜索（标题/内容/作者）+ 用户按用户名前缀搜索 |
+| 通知 | 点赞/评论/关注站内通知，未读数、已读管理 |
+| 站内信 | 发信（幂等键防重）、会话列表、与单用户聊天、未读数、已读、双向软删 |
+| 举报 | 笔记/评论/用户/私信举报（内容快照 + 每日限额），管理员队列处置 |
+| 管理后台 | 用户列表/封禁/删除、笔记与评论删除、举报处理、系统统计 |
 
 ## 目录结构
 
@@ -44,12 +59,12 @@ configs/           # config.yaml + 数据库初始化
 internal/
   cache/           # Redis 封装（JSON/字节缓存、Feed 引擎 ZSET）
   handler/         # Gin handlers（含原始字节缓存逻辑）
-  middleware/      # JWT、慢请求/错误日志
+  middleware/      # JWT、管理员鉴权、慢请求/错误日志
   model/           # GORM 模型
   pkg/cursor/      # 游标编解码（分数游标 / 时间游标）
   repo/            # 数据访问层
   routers/         # 路由注册 + pprof 开关
-  service/         # 业务逻辑（Feed 引擎、打分）
+  service/         # 业务逻辑（Feed 引擎、打分、站内信、举报等）
 deploy/            # systemd 单元、安装脚本
 migrations/        # SQL 迁移
 scripts/           # Docker Compose（MySQL/Redis）
@@ -103,17 +118,46 @@ make deploy SERVER=user@host
 
 ## API 概览
 
+公开接口：
+
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | POST | `/register` `/login` | 注册 / 登录（返回 JWT） |
 | GET | `/feed?type=foryou\|following&cursor=&limit=` | Feed（引擎排序 / 关注流，游标分页） |
 | GET | `/notes/:id` | 笔记详情（匿名走字节缓存） |
+| GET | `/topics/hot` `/topics/:id/feed` `/topics/suggest` | 话题 |
 | GET | `/users/:id` `/users/:id/notes` | 用户主页 / 用户笔记 |
+| GET | `/users/:id/following` `/users/:id/followers` | 关注 / 粉丝列表 |
 | GET | `/search?q=` | 全文搜索（Meilisearch） |
 | GET | `/health/live` `/health/ready` | 健康检查 |
-| POST | `/notes` `/notes/:id/like` `/notes/:id/comments` | 发布 / 点赞 / 评论（需登录） |
-| GET | `/me` `/me/favorites` `/me/notifications` | 个人中心（需登录） |
-| GET | `/admin/*` | 管理后台（管理员） |
+
+登录接口（JWT）：
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/me` `/me/favorites` `/me/notifications*` | 个人中心 / 收藏 / 通知 |
+| GET | `/users/search?username=` | 按用户名前缀搜索用户 |
+| POST/PATCH/DELETE | `/notes` `/notes/:id` `/notes/:id/like` `/favorite` `/comments` | 发布 / 删除 / 点赞 / 收藏 / 评论 |
+| POST/DELETE | `/users/:id/follow` `/users/:id/block` | 关注 / 拉黑 |
+| POST | `/upload/image` `/upload/video` | 图片 / 视频上传（OSS） |
+| POST | `/messages` | 发送站内信（`client_message_id` 幂等） |
+| GET | `/conversations` | 会话列表（游标分页） |
+| GET | `/messages?peer_id=` | 与指定用户的聊天记录 |
+| PATCH | `/messages/read` | 标记与某人会话已读 |
+| GET | `/messages/unread-count` | 未读消息总数 |
+| DELETE | `/messages/:id` | 删除单条消息（软删） |
+| POST | `/reports` | 举报笔记/评论/用户/私信 |
+
+管理接口（管理员）：
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/admin/users` | 用户列表 |
+| PATCH | `/admin/users/:id/ban` | 封禁 / 解封 |
+| DELETE | `/admin/notes/:id` `/admin/comments/:id` | 删除笔记 / 评论 |
+| GET | `/admin/stats` | 系统统计 |
+| GET | `/admin/reports?status=` | 举报队列（0=待处理） |
+| PATCH | `/admin/reports/:id` | 处置举报（成立→删除/封禁，驳回→标记） |
 
 ## 性能基线（2C2G 实测）
 
@@ -150,11 +194,11 @@ go tool pprof -http=:8081 /tmp/cpu.pprof
 
 ### 缓存与引擎
 
-- 打分 ZSET：`feed:engine:v1:{userID}`，TTL 60s 自动重建；点赞/评论/新笔记最长 60s 后反映（可后续在写操作中主动删除 key 立即刷新）。
+- 打分 ZSET：`feed:engine:v1:0`，TTL 60s 自动重建；发布/删除笔记即时 `ZADD`/`ZREM`，点赞/评论/收藏等写操作主动失效引擎与页缓存。
 - 响应字节缓存 key：`feed:foryou:raw:*`、`feed:page:raw:*`、`note:detail:raw:*`、`user:profile:raw:*`。
 
 ## 已知限制
 
 - `following` 关注流暂用 SQL 分页，未接入打分引擎。
 - 登录用户详情接口（含 is_liked/is_favorited）不走字节缓存。
-- 写操作（点赞/评论/发笔记）暂不主动失效引擎与页缓存，依赖 TTL 自愈。
+- Feed 全量候选排序针对当前百级笔记规模设计，规模增大后需要替换为增量排序结构。
