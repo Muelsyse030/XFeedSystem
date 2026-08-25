@@ -162,3 +162,43 @@ func (h *FeedHandler) Search(c *gin.Context) {
 		},
 	})
 }
+
+type HideNoteRequest struct {
+	NoteID int64 `json:"note_id"`
+}
+
+func (h *FeedHandler) Hide(c *gin.Context) {
+	userID, ok := getUserIDFromContext(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"code": 4010, "message": "unauthorized"})
+		return
+	}
+	var req HideNoteRequest
+	if err := c.ShouldBindJSON(&req); err != nil || req.NoteID <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"code": 4001, "message": "invalid note_id"})
+		return
+	}
+	if err := h.feedService.Hide(c.Request.Context(), userID, req.NoteID); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"code": 4002, "message": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "ok"})
+}
+
+func (h *FeedHandler) UndoHide(c *gin.Context) {
+	userID, ok := getUserIDFromContext(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"code": 4010, "message": "unauthorized"})
+		return
+	}
+	noteID, err := strconv.ParseInt(c.Param("noteId"), 10, 64)
+	if err != nil || noteID <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"code": 4001, "message": "invalid note_id"})
+		return
+	}
+	if err := h.feedService.UndoHide(c.Request.Context(), userID, noteID); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"code": 4002, "message": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "ok"})
+}

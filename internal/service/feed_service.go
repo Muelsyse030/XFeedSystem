@@ -4,6 +4,7 @@ import (
 	"XFeedSystem/internal/cache"
 	"XFeedSystem/internal/model"
 	"XFeedSystem/internal/pkg/cursor"
+	"XFeedSystem/internal/pkg/logger"
 	"XFeedSystem/internal/repo"
 	"context"
 	"encoding/json"
@@ -21,16 +22,19 @@ const (
 
 // scoredFeedItem 打分页元素
 type scoredFeedItem struct {
-	ID       int64
-	Score    float64
+	ID        int64
+	Score     float64
 	BaseScore float64
-	AuthorID int64
+	AuthorID  int64
 }
 
 var (
 	engineLockMu sync.Mutex
 	engineLocks  = make(map[int64]*sync.Mutex)
 )
+
+const HideTypePenalty = 0.4 // 每次"不感兴趣"降低该类型权重 0.4
+const MinTypePref = -0.8    // 权重最低 -0.8（乘数最低 0.2），避免直接归零
 
 func engineLockFor(userID int64) *sync.Mutex {
 	engineLockMu.Lock()
@@ -64,11 +68,11 @@ type FeedService struct {
 	cache    *cache.RedisCache
 	search   *repo.SearchRepo
 	block    *BlockService
-	stats	 *StatsService
+	stats    *StatsService
 }
 
-func NewFeedService(r *repo.GormFeedRepo, u *repo.GormUserRepo, c *cache.RedisCache, s *repo.SearchRepo, b *BlockService , st *StatsService) *FeedService {
-	return &FeedService{repo: r, userRepo: u, cache: c, search: s, block: b , stats : st}
+func NewFeedService(r *repo.GormFeedRepo, u *repo.GormUserRepo, c *cache.RedisCache, s *repo.SearchRepo, b *BlockService, st *StatsService) *FeedService {
+	return &FeedService{repo: r, userRepo: u, cache: c, search: s, block: b, stats: st}
 }
 
 func (s *FeedService) ListForYou(ctx context.Context, cursorStr string, limit int, currentUserID int64) (*FeedListResponse, error) {
@@ -161,6 +165,7 @@ func (s *FeedService) getFeedPage(ctx context.Context, userID int64, cursorScore
 	// 读时个性化参数
 	var followingSet map[int64]bool
 	var typePref map[int8]float64
+	hiddenSet := map[int64]struct{}{}
 	if userID > 0 {
 		if ids, err := s.getFollowingIDs(ctx, userID); err == nil {
 			followingSet = make(map[int64]bool, len(ids))
@@ -169,6 +174,27 @@ func (s *FeedService) getFeedPage(ctx context.Context, userID int64, cursorScore
 			}
 		}
 		typePref, _ = s.repo.GetUserTypePreference(ctx, userID)
+		hiddenIDs, err := s.repo.GetHiddenNoteIDs(ctx, userID)
+		if err != nil {
+			logger.Sugar.Warnf("get hidden note ids err: %v", err)
+		}
+		for _, id := range hiddenIDs {
+			hiddenSet[id] = struct{}{}
+		}
+		hideCounts, err := s.repo.CountHidesByType(ctx, userID)
+		if err != nil {
+			logger.Sugar.Warnf("count hides by type err: %v", err)
+		}
+		for t, c := range hideCounts {
+			if typePref == nil {
+				typePref = map[int8]float64{}
+			}
+			cur := typePref[t] - float64(c)*HideTypePenalty
+			if cur < MinTypePref {
+				cur = MinTypePref
+			}
+			typePref[t] = cur
+		}
 	}
 
 	// 全量候选：按基础分倒序取全部
@@ -202,6 +228,17 @@ func (s *FeedService) getFeedPage(ctx context.Context, userID int64, cursorScore
 		authorID := authorByNote[it.ID]
 		it.Score = personalizedScore(it.Score, authorID, typeByNote[it.ID], followingSet, typePref)
 		it.AuthorID = authorID
+	}
+	// 过滤被隐藏的笔记（就地过滤，不新增分配）
+	if len(hiddenSet) > 0 {
+		filtered := candidates[:0]
+		for _, it := range candidates {
+			if _, ok := hiddenSet[it.ID]; ok {
+				continue
+			}
+			filtered = append(filtered, it)
+		}
+		candidates = filtered
 	}
 
 	// 个性化排序（分数降序，同分 id 降序）
@@ -320,7 +357,7 @@ func (s *FeedService) buildFeedResponse(ctx context.Context, notes []*model.Note
 	for _, note := range notes {
 		summary := note.Content
 		if note.ContentFormat == ContentFormatRich {
-		summary = cursor.StripHTML(summary)
+			summary = cursor.StripHTML(summary)
 		}
 		item := model.FeedItem{
 			ID:          note.ID,
@@ -515,9 +552,10 @@ func (s *FeedService) filterBlockedNotes(ctx context.Context, userID int64, note
 	}
 	return filtered
 }
-//增量：新笔记/互动后，单条写入全局基础分 ZSET
-func (s *FeedService) UpsertNoteScore(ctx context.Context , noteID int64) error {
-	note , err := s.repo.GetScoringFields(ctx , noteID)
+
+// 增量：新笔记/互动后，单条写入全局基础分 ZSET
+func (s *FeedService) UpsertNoteScore(ctx context.Context, noteID int64) error {
+	note, err := s.repo.GetScoringFields(ctx, noteID)
 	if err != nil {
 		return err
 	}
@@ -530,11 +568,13 @@ func (s *FeedService) UpsertNoteScore(ctx context.Context , noteID int64) error 
 	sc := baseScore(note, time.Now(), st)
 	return s.cache.ZAddNote(ctx, cache.FeedEngineKey(0), noteID, foldScore(sc, noteID))
 }
-//删笔记时单条移除
+
+// 删笔记时单条移除
 func (s *FeedService) RemoveNoteScore(ctx context.Context, noteID int64) error {
 	return s.cache.ZRemNote(ctx, cache.FeedEngineKey(0), noteID)
 }
-//只重算 24h 内新笔记池
+
+// 只重算 24h 内新笔记池
 func (s *FeedService) RescoreRecentNotes(ctx context.Context) error {
 	since := time.Now().Add(-DecayFreezeHours * time.Hour)
 	notes, err := s.repo.ListSince(ctx, since, 5000) // 复用已有 ListSince
@@ -559,6 +599,7 @@ func (s *FeedService) RescoreRecentNotes(ctx context.Context) error {
 	}
 	return nil
 }
+
 // 后台周期重算（替代 60s 全量重建）
 func (s *FeedService) StartRescorer(ctx context.Context, interval time.Duration) {
 	go func() {
@@ -573,4 +614,25 @@ func (s *FeedService) StartRescorer(ctx context.Context, interval time.Duration)
 			}
 		}
 	}()
+}
+
+func (s *FeedService) Hide(ctx context.Context, userID int64, noteID int64) error {
+	notes, err := s.repo.GetByIDs(ctx, []int64{noteID})
+	if err != nil {
+		return err
+	}
+	if len(notes) == 0 {
+		return ErrNoteNotFound
+	}
+	if err := s.repo.AddFeedHide(ctx, userID, noteID, notes[0].Type); err != nil {
+		return err
+	}
+	return s.cache.InvalidateFeedRawForUser(ctx, userID)
+}
+
+func (s *FeedService) UndoHide(ctx context.Context, userID int64, noteID int64) error {
+	if err := s.repo.RemoveFeedHide(ctx, userID, noteID); err != nil {
+		return err
+	}
+	return s.cache.InvalidateFeedRawForUser(ctx, userID)
 }

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type GormFeedRepo struct {
@@ -26,7 +27,11 @@ type FeedRepo interface {
 	ListByTopic(ctx context.Context, topicID int64, cursor *model.FeedCursor, limit int) ([]*model.Note, error)
 	GetUserTypePreference(ctx context.Context, userID int64) (map[int8]float64, error)
 	GetNoteAuthorIDs(ctx context.Context, noteIDs []int64) (map[int64]int64, error)
-	GetScoringFields(ctx context.Context , noteID int64) (*model.Note , error)
+	GetScoringFields(ctx context.Context, noteID int64) (*model.Note, error)
+	AddFeedHide(ctx context.Context, userID, noteID int64, noteType int8) error
+	RemoveFeedHide(ctx context.Context, userID, noteID int64) error
+	GetHiddenNoteIDs(ctx context.Context, userID int64) ([]int64, error)
+	CountHidesByType(ctx context.Context, userID int64) (map[int8]int64, error)
 }
 
 func (r *GormFeedRepo) ListForYou(ctx context.Context, cursor *model.FeedCursor, limit int) ([]*model.Note, error) {
@@ -247,14 +252,59 @@ func (r *GormFeedRepo) GetNoteTypes(ctx context.Context, noteIDs []int64) (map[i
 	return out, nil
 }
 
-func (r *GormFeedRepo) GetScoringFields(ctx context.Context , noteID int64) (*model.Note , error) {
+func (r *GormFeedRepo) GetScoringFields(ctx context.Context, noteID int64) (*model.Note, error) {
 	var note model.Note
 	err := r.db.WithContext(ctx).Model(&model.Note{}).
-	Select("id", "author_id", "type", "like_count", "favorite_count", "comment_count", "published_at").
-	Where("id = ? AND status = ?", noteID, model.NoteStatusPublished).
-	First(&note).Error
+		Select("id", "author_id", "type", "like_count", "favorite_count", "comment_count", "published_at").
+		Where("id = ? AND status = ?", noteID, model.NoteStatusPublished).
+		First(&note).Error
 	if err != nil {
-		return nil ,err
+		return nil, err
 	}
-	return &note , nil
+	return &note, nil
+}
+
+func (r *GormFeedRepo) CountHidesByType(ctx context.Context, userID int64) (map[int8]int64, error) {
+	//TODO implement me
+	type row struct {
+		Type  int8
+		Count int64
+	}
+	var rows []row
+	if err := r.db.WithContext(ctx).
+		Model(&model.FeedHide{}).
+		Where("user_id = ?", userID).
+		Select("type ,COUNT(*) AS count").
+		Group("type").Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	out := make(map[int8]int64, len(rows))
+	for _, row := range rows {
+		out[row.Type] = row.Count
+	}
+	return out, nil
+}
+
+func (r *GormFeedRepo) GetHiddenNoteIDs(ctx context.Context, userID int64) ([]int64, error) {
+	//TODO implement me
+	var ids []int64
+	err := r.db.WithContext(ctx).
+		Model(&model.FeedHide{}).
+		Where("user_id = ?", userID).
+		Pluck("note_id", &ids).Error
+	return ids, err
+}
+
+func (r *GormFeedRepo) RemoveFeedHide(ctx context.Context, userID, noteID int64) error {
+	//TODO implement me
+	return r.db.WithContext(ctx).
+		Where("user_id = ? AND note_id = ?", userID, noteID).
+		Delete(&model.FeedHide{}).Error
+}
+
+func (r *GormFeedRepo) AddFeedHide(ctx context.Context, userID, noteID int64, noteType int8) error {
+	//TODO implement me
+	return r.db.WithContext(ctx).
+		Clauses(clause.OnConflict{DoNothing: true}).
+		Create(&model.FeedHide{UserID: userID, NoteID: noteID, Type: noteType}).Error
 }

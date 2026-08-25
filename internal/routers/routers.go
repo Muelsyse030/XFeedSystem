@@ -169,6 +169,9 @@ func SetupRouter(db *gorm.DB, appCfg config.Config) *gin.Engine {
 		auth.DELETE("/messages/:id", messageHandler.Delete)
 
 		auth.POST("/reports", reportHandler.Create)
+
+		auth.POST("/feed/hide", feedHandler.Hide)               // {note_id}
+		auth.DELETE("/feed/hide/:noteId", feedHandler.UndoHide) // 撤销
 	}
 
 	admin := auth.Group("/admin")
