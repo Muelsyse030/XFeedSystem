@@ -203,6 +203,10 @@ func (s *NoteService) Delete(ctx context.Context, id int64, authorID int64) erro
 			_ = s.search.Delete(context.Background(), id)
 		})
 	}
+	// 从打分 ZSET 移除，避免已删笔记残留占位
+	if s.feed != nil {
+		_ = s.feed.RemoveNoteScore(context.Background(), id)
+	}
 	return nil
 }
 

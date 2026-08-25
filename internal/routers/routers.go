@@ -76,6 +76,9 @@ func SetupRouter(db *gorm.DB, appCfg config.Config) *gin.Engine {
 	messageService := service.NewMessageService(repo.NewGormMessageRepo(db), userRepo, blockService)
 	messageHandler := handler.NewMessageHandler(messageService)
 
+	reportService := service.NewReportService(repo.NewGormReportRepo(db), repo.NewGormNoteRepo(db), userRepo, repo.NewGormMessageRepo(db), repo.NewGormAdminRepo(db))
+	reportHandler := handler.NewReportHandler(reportService)
+
 	if err != nil {
 		logger.Sugar.Warnf("warn: init oss storage: %v", err)
 		storageService = &service.StorageService{} // 降级为空服务，避免 nil panic
@@ -164,6 +167,8 @@ func SetupRouter(db *gorm.DB, appCfg config.Config) *gin.Engine {
 		auth.PATCH("/messages/read", messageHandler.MarkRead) // {peer_id}
 		auth.GET("/messages/unread-count", messageHandler.UnreadCount)
 		auth.DELETE("/messages/:id", messageHandler.Delete)
+
+		auth.POST("/reports", reportHandler.Create)
 	}
 
 	admin := auth.Group("/admin")
@@ -173,7 +178,10 @@ func SetupRouter(db *gorm.DB, appCfg config.Config) *gin.Engine {
 		admin.PATCH("/users/:id/ban", adminHandler.BanUser)       // 封禁/解封
 		admin.DELETE("/notes/:id", adminHandler.DeleteNote)       // 删除笔记
 		admin.DELETE("/comments/:id", adminHandler.DeleteComment) // 删除评论
-		admin.GET("/stats", adminHandler.Stats)                   // 系统统计
+		admin.GET("/stats", adminHandler.Stats)
+
+		admin.GET("/reports", reportHandler.List)         // 待处理队列
+		admin.PATCH("/reports/:id", reportHandler.Handle) // 处理// 系统统计
 	}
 	super := auth.Group("/admin")
 	super.Use(middleware.SuperAdminAuth())

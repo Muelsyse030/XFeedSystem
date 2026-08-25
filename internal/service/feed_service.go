@@ -78,7 +78,7 @@ func (s *FeedService) ListForYou(ctx context.Context, cursorStr string, limit in
 		return nil, err
 	}
 
-	page, err := s.getFeedPage(ctx, currentUserID, cursorScore, cursorID, limit)
+	page, start, err := s.getFeedPage(ctx, currentUserID, cursorScore, cursorID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -120,16 +120,12 @@ func (s *FeedService) ListForYou(ctx context.Context, cursorStr string, limit in
 		}
 		s.stats.RecordImpressions(ctx, shownIDs)
 	}
-	// 下一页游标 = 本页最后一条（过滤后）的 score + id
-	lastNote := ordered[len(ordered)-1]
-	lastScore := page[len(page)-1].BaseScore
-	for _, it := range page {
-		if it.ID == lastNote.ID {
-			lastScore = it.BaseScore
-			break
-		}
+	// 下一页游标 = 个性化排序后的位置偏移（顺序稳定，不重不漏）
+	if int64(len(page)) == int64(limit) {
+		resp.NextCursor = cursor.EncodeScoreCursor(float64(start+int64(len(page))), 0)
+	} else {
+		resp.NextCursor = ""
 	}
-	resp.NextCursor = cursor.EncodeScoreCursor(lastScore, lastNote.ID)
 	return resp, nil
 }
 
@@ -147,14 +143,22 @@ func (s *FeedService) ListTopic(ctx context.Context, topicID int64, cursorStr st
 	return s.buildFeedResponse(ctx, notes)
 }
 
-// getFeedPage 从打分 ZSET 取一页（score 逆序，同分按 id 逆序）
-func (s *FeedService) getFeedPage(ctx context.Context, userID int64, cursorScore float64, cursorID int64, limit int) ([]scoredFeedItem, error) {
-	key := cache.FeedEngineKey(0) // 统一读全局基础分，不再每用户一份
+// getFeedPage 全量候选 + 读时个性化排序后，按位置偏移分页。
+// 为什么不用"基础分窗口 + 基础分游标"：个性化排序和基础分顺序不一致时，
+// 基础分游标会永久跳过"基础分靠前但个性化排后"的笔记（漏内容）。
+// 当前站点规模小（百级笔记），全量取 ZSET 再排序成本极低，换来不重不漏。
+func (s *FeedService) getFeedPage(ctx context.Context, userID int64, cursorScore float64, cursorID int64, limit int) ([]scoredFeedItem, int64, error) {
+	key := cache.FeedEngineKey(0)
 	if err := s.ensureFeedEngine(ctx, key); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
-	// 读时个性化（只对抓出来的小窗口生效，成本 O(fetchSize)）
+	start := int64(0)
+	if cursorID == 0 && cursorScore > 0 {
+		start = int64(cursorScore)
+	}
+
+	// 读时个性化参数
 	var followingSet map[int64]bool
 	var typePref map[int8]float64
 	if userID > 0 {
@@ -167,76 +171,84 @@ func (s *FeedService) getFeedPage(ctx context.Context, userID int64, cursorScore
 		typePref, _ = s.repo.GetUserTypePreference(ctx, userID)
 	}
 
-	max := "+inf"
-	if cursorID > 0 {
-		max = "(" + strconv.FormatInt(foldScore(cursorScore, cursorID), 10)
+	// 全量候选：按基础分倒序取全部
+	zs, err := s.cache.ZRevRangeByScore(ctx, key, "+inf", "-inf", 0, -1)
+	if err != nil {
+		return nil, 0, err
+	}
+	ids := make([]int64, 0, len(zs))
+	candidates := make([]scoredFeedItem, 0, len(zs))
+	for _, z := range zs {
+		member, ok := z.Member.(string)
+		if !ok {
+			continue
+		}
+		id, err := strconv.ParseInt(member, 10, 64)
+		if err != nil {
+			continue
+		}
+		score, _ := unfoldScore(int64(z.Score))
+		ids = append(ids, id)
+		candidates = append(candidates, scoredFeedItem{ID: id, Score: score, BaseScore: score})
+	}
+	if len(candidates) == 0 {
+		return []scoredFeedItem{}, start, nil
 	}
 
+	authorByNote, _ := s.repo.GetNoteAuthorIDs(ctx, ids)
+	typeByNote, _ := s.repo.GetNoteTypes(ctx, ids)
+	for i := range candidates {
+		it := &candidates[i]
+		authorID := authorByNote[it.ID]
+		it.Score = personalizedScore(it.Score, authorID, typeByNote[it.ID], followingSet, typePref)
+		it.AuthorID = authorID
+	}
+
+	// 个性化排序（分数降序，同分 id 降序）
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].Score != candidates[j].Score {
+			return candidates[i].Score > candidates[j].Score
+		}
+		return candidates[i].ID > candidates[j].ID
+	})
+
+	// 拉黑过滤：按作者去重后一次性查询
+	blockedAuthors := make(map[int64]bool)
+	if userID > 0 && s.block != nil {
+		authorSet := make(map[int64]struct{}, len(candidates))
+		for _, it := range candidates {
+			authorSet[it.AuthorID] = struct{}{}
+		}
+		for aid := range authorSet {
+			if blocked, err := s.block.IsBlockedEitherWay(ctx, userID, aid); err == nil && blocked {
+				blockedAuthors[aid] = true
+			}
+		}
+	}
+
+	// 作者去重（自己的笔记不限量）+ 位置分页
 	const maxPerAuthor = 2
 	authorCount := map[int64]int{}
-	out := make([]scoredFeedItem, 0, limit)
-	fetchSize := int64(limit * 3)
-	var offset int64
-
-	for len(out) < limit {
-		zs, err := s.cache.ZRevRangeByScore(ctx, key, max, "-inf", offset, fetchSize)
-		if err != nil {
-			return nil, err
+	full := make([]scoredFeedItem, 0, len(candidates))
+	for _, it := range candidates {
+		if blockedAuthors[it.AuthorID] {
+			continue
 		}
-		if len(zs) == 0 {
-			break
+		if it.AuthorID != userID && authorCount[it.AuthorID] >= maxPerAuthor {
+			continue
 		}
-
-		ids := make([]int64, 0, len(zs))
-		candidates := make([]scoredFeedItem, 0, len(zs))
-		for _, z := range zs {
-			member, ok := z.Member.(string)
-			if !ok {
-				continue
-			}
-			id, err := strconv.ParseInt(member, 10, 64) // member 现在是笔记ID
-			if err != nil {
-				continue
-			}
-			score, _ := unfoldScore(int64(z.Score)) // 从 ZSET score 解出分数
-			ids = append(ids, id)
-			candidates = append(candidates, scoredFeedItem{ID: id, Score: score , BaseScore: score})
-		}
-
-		authorByNote, _ := s.repo.GetNoteAuthorIDs(ctx, ids)
-		typeByNote, _ := s.repo.GetNoteTypes(ctx, ids)
-
-		// 读时个性化：乘关注/类型偏好后重排这一批
-		for i := range candidates {
-			it := &candidates[i]
-			authorID := authorByNote[it.ID]
-			it.Score = personalizedScore(it.Score, authorID, typeByNote[it.ID], followingSet, typePref)
-			it.AuthorID = authorID
-		}
-		sort.Slice(candidates, func(i, j int) bool {
-			if candidates[i].Score != candidates[j].Score {
-				return candidates[i].Score > candidates[j].Score
-			}
-			return candidates[i].ID > candidates[j].ID
-		})
-
-		for _, it := range candidates {
-			if authorCount[it.AuthorID] >= maxPerAuthor {
-				continue
-			}
-			out = append(out, it)
-			authorCount[it.AuthorID]++
-			if len(out) >= limit {
-				break
-			}
-		}
-
-		offset += fetchSize
-		if int64(len(zs)) < fetchSize {
-			break
-		}
+		full = append(full, it)
+		authorCount[it.AuthorID]++
 	}
-	return out, nil
+
+	if start >= int64(len(full)) {
+		return []scoredFeedItem{}, start, nil
+	}
+	end := start + int64(limit)
+	if end > int64(len(full)) {
+		end = int64(len(full))
+	}
+	return full[start:end], start, nil
 }
 
 // ensureFeedEngine 保证打分 ZSET 存在（不存在则重建，同用户单飞防惊群）

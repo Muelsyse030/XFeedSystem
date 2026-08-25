@@ -14,6 +14,8 @@ const (
 	FollowBoost    = 1.5
 	TypePrefBoost  = 1.0 // 类型偏好基础倍率，实际会叠加
 	DecayFreezeHours = 24.0 //24小时冻结衰减
+	NewNoteBoost   = 1.5  // 新笔记保底热度：零互动也能进首页
+	NewNoteBoostHours = 48.0 // 48 小时内线性衰减到 0
 )
 
 // scoredNote 打分后的笔记
@@ -37,7 +39,13 @@ func baseScore(note *model.Note , now time.Time , stats *model.NoteStats) float6
 	float64(note.FavoriteCount) * WeightFavorite +
 	float64(note.CommentCount) * WeightComment
 
-	score := interaction * decayFactor(now.Sub(note.PublishedAt).Hours())
+	hours := now.Sub(note.PublishedAt).Hours()
+	score := interaction * decayFactor(hours)
+
+	// 新内容保底热度：刚发布、零互动的笔记也能出现在首页，48h 内线性衰减
+	if hours < NewNoteBoostHours {
+		score += NewNoteBoost * (1 - hours/NewNoteBoostHours)
+	}
 
 	if stats != nil {
 		score *= ctrBoost(stats.Reads,stats.Impressions)
