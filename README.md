@@ -44,10 +44,10 @@ graph LR
 
 | 功能 | 说明 |
 |---|---|
-| 笔记 | 富文本（白名单清洗）/ 视频 / 多图；正文首图自动作为封面 |
+| 笔记 | 富文本（白名单清洗）/ 视频 / 多图；正文首图自动作为封面；编辑自动留档，作者可查看/恢复最近 50 个版本 |
 | 互动 | 点赞、收藏、评论、关注、拉黑 |
 | 搜索 | Meilisearch 全文搜索（标题/内容/作者）+ 用户按用户名前缀搜索 |
-| 通知 | 点赞/评论/关注站内通知，未读数、已读管理 |
+| 通知 | 点赞/评论/回复/关注/@提及站内通知，未读数、已读管理 |
 | Feed 不感兴趣 | 隐藏单条笔记，按类型降低个性化权重，支持撤销 |
 | 站内信 | 发信（幂等键防重）、会话列表、与单用户聊天、未读数、已读、双向软删 |
 | 举报 | 笔记/评论/用户/私信举报（内容快照 + 每日限额），管理员队列处置 |
@@ -141,6 +141,8 @@ make deploy SERVER=user@host
 | GET | `/users/search?username=` | 按用户名前缀搜索用户 |
 | POST/DELETE | `/feed/hide` `/feed/hide/:noteId` | 不感兴趣（隐藏笔记）/ 撤销 |
 | POST/PATCH/DELETE | `/notes` `/notes/:id` `/notes/:id/like` `/favorite` `/comments` | 发布 / 删除 / 点赞 / 收藏 / 评论 |
+| GET | `/notes/:id/versions` `/notes/:id/versions/:vid` | 笔记版本列表 / 版本详情（仅作者） |
+| POST | `/notes/:id/restore/:vid` | 恢复指定版本（仅作者） |
 | POST/DELETE | `/users/:id/follow` `/users/:id/block` | 关注 / 拉黑 |
 | POST | `/upload/image` `/upload/video` | 图片 / 视频上传（OSS） |
 | POST | `/messages` | 发送站内信（`client_message_id` 幂等） |
