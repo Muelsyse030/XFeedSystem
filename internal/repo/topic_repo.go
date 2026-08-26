@@ -16,6 +16,11 @@ type TopicRepo interface {
 	GetByID(ctx context.Context, id int64) (*model.Topic, error)
 	Hot(ctx context.Context, limit int) ([]*model.Topic, error)
 	Suggest(ctx context.Context, q string, limit int) ([]*model.Topic, error)
+	FollowTopic(ctx context.Context, userID, topicID int64) error
+	UnfollowTopic(ctx context.Context, userID, topicID int64) error
+	GetFollowedTopicIDs(ctx context.Context, userID int64) ([]int64, error)
+	ListFollowedTopics(ctx context.Context, userID int64) ([]*model.Topic, error)
+	IsTopicFollowed(ctx context.Context, userID, topicID int64) (bool, error)
 }
 
 type GormTopicRepo struct {
@@ -101,4 +106,41 @@ func (r *GormTopicRepo) Suggest(ctx context.Context, q string, limit int) ([]*mo
 		Order("note_count DESC, id ASC").
 		Limit(limit).Find(&topics).Error
 	return topics, err
+}
+
+func (r *GormTopicRepo) FollowTopic(ctx context.Context, userID, topicID int64) error {
+	return r.db.WithContext(ctx).
+		Clauses(clause.OnConflict{DoNothing: true}). // 幂等
+		Create(&model.TopicFollow{UserID: userID, TopicID: topicID}).Error
+}
+
+func (r *GormTopicRepo) UnfollowTopic(ctx context.Context, userID, topicID int64) error {
+	return r.db.WithContext(ctx).
+		Where("user_id = ? AND topic_id = ?", userID, topicID).
+		Delete(&model.TopicFollow{}).Error
+}
+
+func (r *GormTopicRepo) GetFollowedTopicIDs(ctx context.Context, userID int64) ([]int64, error) {
+	var ids []int64
+	err := r.db.WithContext(ctx).Model(&model.TopicFollow{}).
+		Where("user_id = ?", userID).Pluck("topic_id", &ids).Error
+	return ids, err
+}
+
+func (r *GormTopicRepo) ListFollowedTopics(ctx context.Context, userID int64) ([]*model.Topic, error) {
+	var topics []*model.Topic
+	err := r.db.WithContext(ctx).
+		Model(&model.Topic{}).
+		Joins("JOIN topic_follows tf ON tf.topic_id = topics.id").
+		Where("tf.user_id = ?", userID).
+		Order("tf.created_at DESC").
+		Find(&topics).Error
+	return topics, err
+}
+
+func (r *GormTopicRepo) IsTopicFollowed(ctx context.Context, userID, topicID int64) (bool, error) {
+	var n int64
+	err := r.db.WithContext(ctx).Model(&model.TopicFollow{}).
+		Where("user_id = ? AND topic_id = ?", userID, topicID).Count(&n).Error
+	return n > 0, err
 }

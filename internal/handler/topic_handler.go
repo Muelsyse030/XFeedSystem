@@ -93,3 +93,53 @@ func (h *TopicHandler) Suggest(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "ok", "data": topics})
 }
+
+func (h *TopicHandler) Follow(c *gin.Context) {
+	userID, ok := getUserIDFromContext(c)
+	if !ok {
+		c.JSON(401, gin.H{"code": 4010, "message": " "})
+		return
+	}
+	topicID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || topicID <= 0 {
+		c.JSON(400, gin.H{"code": 4000, "message": " "})
+		return
+	}
+	if err := h.topicService.Follow(c.Request.Context(), userID, topicID); err != nil {
+		c.JSON(400, gin.H{"code": 4002, "message": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"code": 0, "message": "ok"})
+}
+
+func (h *TopicHandler) Unfollow(c *gin.Context) {
+	userID, ok := getUserIDFromContext(c)
+	if !ok {
+		c.JSON(401, gin.H{"code": 4010, "message": " "})
+		return
+	}
+	topicID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || topicID <= 0 {
+		c.JSON(400, gin.H{"code": 4000, "message": " "})
+		return
+	}
+	if err := h.topicService.Unfollow(c.Request.Context(), userID, topicID); err != nil {
+		c.JSON(400, gin.H{"code": 4002, "message": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"code": 0, "message": "ok"})
+}
+
+func (h *TopicHandler) Followed(c *gin.Context) {
+	userID, ok := getUserIDFromContext(c)
+	if !ok {
+		c.JSON(401, gin.H{"code": 4010, "message": " "})
+		return
+	}
+	topics, err := h.topicService.Followed(c.Request.Context(), userID)
+	if err != nil {
+		c.JSON(500, gin.H{})
+		return
+	}
+	c.JSON(200, gin.H{"code": 0, "message": "ok", "data": topics})
+}

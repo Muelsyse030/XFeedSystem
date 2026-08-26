@@ -176,6 +176,10 @@ func SetupRouter(db *gorm.DB, appCfg config.Config) *gin.Engine {
 		auth.GET("/notes/:id/versions", noteHandler.ListVersions)
 		auth.GET("/notes/:id/versions/:vid", noteHandler.GetVersion)
 		auth.POST("/notes/:id/restore/:vid", noteHandler.RestoreVersion)
+
+		auth.POST("/topics/:id/follow", topicHandler.Follow)
+		auth.DELETE("/topics/:id/follow", topicHandler.Unfollow)
+		auth.GET("/me/topics", topicHandler.Followed)
 	}
 
 	admin := auth.Group("/admin")

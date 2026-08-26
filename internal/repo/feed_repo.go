@@ -308,3 +308,30 @@ func (r *GormFeedRepo) AddFeedHide(ctx context.Context, userID, noteID int64, no
 		Clauses(clause.OnConflict{DoNothing: true}).
 		Create(&model.FeedHide{UserID: userID, NoteID: noteID, Type: noteType}).Error
 }
+
+func (r *GormFeedRepo) GetFollowedTopicIDs(ctx context.Context, userID int64) ([]int64, error) {
+	var ids []int64
+	err := r.db.WithContext(ctx).Model(&model.TopicFollow{}).
+		Where("user_id = ?", userID).Pluck("topic_id", &ids).Error
+	return ids, err
+}
+
+func (r *GormFeedRepo) ListTopicIDsByNoteIDs(ctx context.Context, noteIDs []int64) (map[int64][]int64, error) {
+	out := map[int64][]int64{}
+	if len(noteIDs) == 0 {
+		return out, nil
+	}
+	type row struct {
+		NoteID  int64
+		TopicID int64
+	}
+	var rows []row
+	if err := r.db.WithContext(ctx).Model(&model.NoteTopic{}).
+		Where("note_id IN ?", noteIDs).Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	for _, r := range rows {
+		out[r.NoteID] = append(out[r.NoteID], r.TopicID)
+	}
+	return out, nil
+}

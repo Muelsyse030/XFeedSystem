@@ -16,3 +16,12 @@ type NoteTopic struct {
 	TopicID   int64 `gorm:"primaryKey"`
 	CreatedAt time.Time
 }
+
+type TopicFollow struct {
+	ID        int64 `gorm:"primaryKey"`
+	UserID    int64 `gorm:"not null"`
+	TopicID   int64 `gorm:"not null"`
+	CreatedAt time.Time
+}
+
+func (TopicFollow) TableName() string { return "topic_follows" }

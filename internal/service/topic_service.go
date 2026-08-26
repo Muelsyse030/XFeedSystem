@@ -5,6 +5,7 @@ import (
 	"XFeedSystem/internal/model"
 	"XFeedSystem/internal/repo"
 	"context"
+	"errors"
 	"regexp"
 	"strings"
 	"time"
@@ -15,6 +16,7 @@ const (
 	topicMaxPerNote = 5
 	topicNameMaxLen = 32
 )
+var ErrTopicNotFound = errors.New("topic not found")
 
 var topicRe = regexp.MustCompile(`#([\p{L}\p{N}_]{1,32})`)
 
@@ -129,4 +131,19 @@ func (s *TopicService) bumpHot(ctx context.Context, topicIDs []int64) {
 	}
 	_ = s.cache.Delete(ctx, cache.TopicHotKey())
 	_ = s.cache.InvalidateTopicFeedRaw(ctx)
+}
+
+func (s *TopicService) Follow(ctx context.Context, userID, topicID int64) error {
+	if _, err := s.repo.GetByID(ctx, topicID); err != nil { // 话题必须存在
+		return ErrTopicNotFound
+	}
+	return s.repo.FollowTopic(ctx, userID, topicID)
+}
+
+func (s *TopicService) Unfollow(ctx context.Context, userID, topicID int64) error {
+	return s.repo.UnfollowTopic(ctx, userID, topicID)
+}
+
+func (s *TopicService) Followed(ctx context.Context, userID int64) ([]*model.Topic, error) {
+	return s.repo.ListFollowedTopics(ctx, userID)
 }

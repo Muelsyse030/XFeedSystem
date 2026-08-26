@@ -8,14 +8,15 @@ import (
 
 const (
 	// 权重常量，方便调参
-	WeightLike     = 3.0
-	WeightFavorite = 5.0
-	WeightComment  = 4.0
-	FollowBoost    = 1.5
-	TypePrefBoost  = 1.0 // 类型偏好基础倍率，实际会叠加
-	DecayFreezeHours = 24.0 //24小时冻结衰减
-	NewNoteBoost   = 1.5  // 新笔记保底热度：零互动也能进首页
+	WeightLike        = 3.0
+	WeightFavorite    = 5.0
+	WeightComment     = 4.0
+	FollowBoost       = 1.5
+	TypePrefBoost     = 1.0  // 类型偏好基础倍率，实际会叠加
+	DecayFreezeHours  = 24.0 //24小时冻结衰减
+	NewNoteBoost      = 1.5  // 新笔记保底热度：零互动也能进首页
 	NewNoteBoostHours = 48.0 // 48 小时内线性衰减到 0
+	TopicFollowBoost  = 1.5
 )
 
 // scoredNote 打分后的笔记
@@ -34,10 +35,10 @@ func decayFactor(hours float64) float64 {
 	return 1.0 / (1.0 + math.Sqrt(hours))
 }
 
-func baseScore(note *model.Note , now time.Time , stats *model.NoteStats) float64 {
-	interaction := float64(note.LikeCount) * WeightLike +
-	float64(note.FavoriteCount) * WeightFavorite +
-	float64(note.CommentCount) * WeightComment
+func baseScore(note *model.Note, now time.Time, stats *model.NoteStats) float64 {
+	interaction := float64(note.LikeCount)*WeightLike +
+		float64(note.FavoriteCount)*WeightFavorite +
+		float64(note.CommentCount)*WeightComment
 
 	hours := now.Sub(note.PublishedAt).Hours()
 	score := interaction * decayFactor(hours)
@@ -48,18 +49,22 @@ func baseScore(note *model.Note , now time.Time , stats *model.NoteStats) float6
 	}
 
 	if stats != nil {
-		score *= ctrBoost(stats.Reads,stats.Impressions)
+		score *= ctrBoost(stats.Reads, stats.Impressions)
 	}
 	return score
 }
-func personalizedScore(base float64 , authorID int64 , noteType int8 ,followingSet map[int64]bool , typePref map[int8]float64) float64 {
+func personalizedScore(base float64, authorID int64, noteType int8,
+	followingSet map[int64]bool, typePref map[int8]float64, topicHit bool) float64 {
 	s := base
 	if followingSet != nil && followingSet[authorID] {
 		s *= FollowBoost
 	}
+	if topicHit {
+		s *= TopicFollowBoost // 关注的话题内容权重上浮
+	}
 	if typePref != nil {
 		if boost, ok := typePref[noteType]; ok {
-			s *= (1.0 + boost * TypePrefBoost)
+			s *= (1.0 + boost*TypePrefBoost)
 		}
 	}
 	return s

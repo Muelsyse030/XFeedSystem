@@ -166,11 +166,17 @@ func (s *FeedService) getFeedPage(ctx context.Context, userID int64, cursorScore
 	var followingSet map[int64]bool
 	var typePref map[int8]float64
 	hiddenSet := map[int64]struct{}{}
+	followedTopics := map[int64]bool{}
 	if userID > 0 {
 		if ids, err := s.getFollowingIDs(ctx, userID); err == nil {
 			followingSet = make(map[int64]bool, len(ids))
 			for _, id := range ids {
 				followingSet[id] = true
+			}
+		}
+		if ids, err := s.repo.GetFollowedTopicIDs(ctx, userID); err == nil {
+			for _, id := range ids {
+				followedTopics[id] = true
 			}
 		}
 		typePref, _ = s.repo.GetUserTypePreference(ctx, userID)
@@ -223,12 +229,22 @@ func (s *FeedService) getFeedPage(ctx context.Context, userID int64, cursorScore
 
 	authorByNote, _ := s.repo.GetNoteAuthorIDs(ctx, ids)
 	typeByNote, _ := s.repo.GetNoteTypes(ctx, ids)
+
+	topicIDsByNote, _ := s.repo.ListTopicIDsByNoteIDs(ctx, ids)
 	for i := range candidates {
 		it := &candidates[i]
 		authorID := authorByNote[it.ID]
-		it.Score = personalizedScore(it.Score, authorID, typeByNote[it.ID], followingSet, typePref)
+		topicHit := false
+		for _, tid := range topicIDsByNote[it.ID] {
+			if followedTopics[tid] {
+				topicHit = true
+				break
+			}
+		}
+		it.Score = personalizedScore(it.Score, authorID, typeByNote[it.ID], followingSet, typePref, topicHit)
 		it.AuthorID = authorID
 	}
+
 	// 过滤被隐藏的笔记（就地过滤，不新增分配）
 	if len(hiddenSet) > 0 {
 		filtered := candidates[:0]
