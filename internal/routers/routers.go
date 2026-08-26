@@ -66,7 +66,7 @@ func SetupRouter(db *gorm.DB, appCfg config.Config) *gin.Engine {
 	feedHandler := handler.NewFeedHandler(feedService, redisCache)
 
 	noteRepo := repo.NewGormNoteRepo(db)
-	noteService := service.NewNoteService(noteRepo, redisCache, searchRepo, notifService, blockService, topicService, feedService)
+	noteService := service.NewNoteService(noteRepo, redisCache, searchRepo, notifService, blockService, topicService, feedService, userRepo)
 	noteHandler := handler.NewNoteHandler(noteService, userRepo, redisCache, statsService)
 
 	topicHandler := handler.NewTopicHandler(topicService, feedService, redisCache)
@@ -172,6 +172,10 @@ func SetupRouter(db *gorm.DB, appCfg config.Config) *gin.Engine {
 
 		auth.POST("/feed/hide", feedHandler.Hide)               // {note_id}
 		auth.DELETE("/feed/hide/:noteId", feedHandler.UndoHide) // 撤销
+
+		auth.GET("/notes/:id/versions", noteHandler.ListVersions)
+		auth.GET("/notes/:id/versions/:vid", noteHandler.GetVersion)
+		auth.POST("/notes/:id/restore/:vid", noteHandler.RestoreVersion)
 	}
 
 	admin := auth.Group("/admin")

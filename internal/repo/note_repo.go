@@ -28,6 +28,11 @@ type NoteRepo interface {
 	ListCommentsByNoteID(ctx context.Context, noteID, cursor int64, limit int) ([]*model.NoteComment, error)
 	ListRepliesByParentID(ctx context.Context, noteID, parentID int64, limit int) ([]*model.NoteComment, error)
 	DeleteComment(ctx context.Context, commentID int64, userID int64) error
+
+	InsertNoteVersion(ctx context.Context, v *model.NoteVersion) error
+	ListNoteVersions(ctx context.Context, noteID, cursor int64, limit int) ([]*model.NoteVersion, int64, error)
+	GetNoteVersion(ctx context.Context, id, noteID int64) (*model.NoteVersion, error)
+	TrimNoteVersions(ctx context.Context, noteID int64, keep int) error
 }
 type GormNoteRepo struct {
 	db *gorm.DB
@@ -292,12 +297,12 @@ func (r *GormNoteRepo) UpdataByAuthorID(ctx context.Context, noteID, authorID in
 		Model(&model.Note{}).
 		Where("id = ? AND author_id = ? AND status = ?", noteID, authorID, model.NoteStatusPublished).
 		Updates(map[string]interface{}{
-		"title":          title,
-		"content":        content,
-		"images":         images,
-		"type":           noteType,
-		"video_url":      videoURL,
-		"content_format": contentFormat,
+			"title":          title,
+			"content":        content,
+			"images":         images,
+			"type":           noteType,
+			"video_url":      videoURL,
+			"content_format": contentFormat,
 		})
 	if res.Error != nil {
 		return res.Error
@@ -306,4 +311,55 @@ func (r *GormNoteRepo) UpdataByAuthorID(ctx context.Context, noteID, authorID in
 		return gorm.ErrRecordNotFound
 	}
 	return nil
+}
+
+func (r *GormNoteRepo) TrimNoteVersions(ctx context.Context, noteID int64, keep int) error {
+	//TODO implement me
+	return r.db.WithContext(ctx).Exec(`
+		DELETE FROM note_versions
+		WHERE note_id = ? AND id NOT IN (
+			SELECT id FROM (
+				SELECT id FROM note_versions
+				WHERE note_id = ?
+				ORDER BY id DESC
+				LIMIT ?
+			) t
+		)`, noteID, noteID, keep).Error
+}
+
+func (r *GormNoteRepo) GetNoteVersion(ctx context.Context, id, noteID int64) (*model.NoteVersion, error) {
+	//TODO implement me
+	var v model.NoteVersion
+	if err := r.db.WithContext(ctx).
+		Where("id = ? AND note_id = ?", id, noteID).
+		First(&v).Error; err != nil {
+		return nil, err
+	}
+	return &v, nil
+}
+
+func (r *GormNoteRepo) ListNoteVersions(ctx context.Context, noteID, cursor int64, limit int) ([]*model.NoteVersion, int64, error) {
+	//TODO implement me
+	if limit <= 0 || limit > 50 {
+		limit = 20
+	}
+	if cursor <= 0 {
+		cursor = 1<<63 - 1
+	}
+	var list []*model.NoteVersion
+	err := r.db.WithContext(ctx).
+		Where("note_id = ? AND id < ?", noteID, cursor).
+		Order("id DESC").
+		Limit(limit).
+		Find(&list).Error
+	var next int64
+	if len(list) > 0 {
+		next = list[len(list)-1].ID
+	}
+	return list, next, err
+}
+
+func (r *GormNoteRepo) InsertNoteVersion(ctx context.Context, v *model.NoteVersion) error {
+	//TODO implement me
+	return r.db.WithContext(ctx).Create(v).Error
 }

@@ -5,11 +5,13 @@ import (
 )
 
 const (
-	NotifTypeLike     int8 = 1
-	NotifTypeComment  int8 = 2
-	NotifTypeReply    int8 = 3
-	NotifTypeFollow   int8 = 4
-	NotifTypeFavorite int8 = 5
+	NotifTypeLike         int8 = 1
+	NotifTypeComment      int8 = 2
+	NotifTypeReply        int8 = 3
+	NotifTypeFollow       int8 = 4
+	NotifTypeFavorite     int8 = 5
+	NotifTypeMention      int8 = 6 // @提到了你
+	NotifTypeReplyComment int8 = 7 // 回复了你的评论
 )
 
 type Notification struct {

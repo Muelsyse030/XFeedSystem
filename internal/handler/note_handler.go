@@ -21,7 +21,7 @@ type NoteHandler struct {
 	noteService *service.NoteService
 	userRepo    *repo.GormUserRepo
 	cache       *cache.RedisCache
-	stats		*service.StatsService
+	stats       *service.StatsService
 }
 type CreateNoteRequest struct {
 	Title         string   `json:"title"`
@@ -34,17 +34,17 @@ type CreateNoteRequest struct {
 }
 
 type NoteResponse struct {
-	ID          int64     `json:"id"`
-	AuthorID    int64     `json:"author_id"`
-	Title       string    `json:"title"`
-	Content     string    `json:"content"`
-	ContentFormat int8 `json:"content_format"`
-	PublishedAt time.Time `json:"published_at"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID            int64     `json:"id"`
+	AuthorID      int64     `json:"author_id"`
+	Title         string    `json:"title"`
+	Content       string    `json:"content"`
+	ContentFormat int8      `json:"content_format"`
+	PublishedAt   time.Time `json:"published_at"`
+	CreatedAt     time.Time `json:"created_at"`
 }
 
-func NewNoteHandler(noteService *service.NoteService, userRepo *repo.GormUserRepo, cache *cache.RedisCache , stats *service.StatsService) *NoteHandler {
-	return &NoteHandler{noteService: noteService, userRepo: userRepo, cache: cache , stats: stats}
+func NewNoteHandler(noteService *service.NoteService, userRepo *repo.GormUserRepo, cache *cache.RedisCache, stats *service.StatsService) *NoteHandler {
+	return &NoteHandler{noteService: noteService, userRepo: userRepo, cache: cache, stats: stats}
 }
 
 func (h *NoteHandler) Create(c *gin.Context) {
@@ -72,7 +72,7 @@ func (h *NoteHandler) Create(c *gin.Context) {
 		})
 		return
 	}
-	note, err := h.noteService.Create(userID, req.Title, req.Content, req.Images, req.Topics,req.Type, req.VideoURL, req.ContentFormat)
+	note, err := h.noteService.Create(userID, req.Title, req.Content, req.Images, req.Topics, req.Type, req.VideoURL, req.ContentFormat)
 	if err != nil {
 		if errors.Is(err, service.ErrEmptyNoteContent) || errors.Is(err, service.ErrContentTooLong) {
 			c.JSON(http.StatusBadRequest, gin.H{"code": 4003, "message": err.Error()})
@@ -85,16 +85,16 @@ func (h *NoteHandler) Create(c *gin.Context) {
 		"code":    200,
 		"message": "ok",
 		"data": gin.H{
-			"id":           note.ID,
-			"author_id":    note.AuthorID,
-			"title":        note.Title,
-			"content":      note.Content,
-			"images":       parseImages(note.Images),
+			"id":             note.ID,
+			"author_id":      note.AuthorID,
+			"title":          note.Title,
+			"content":        note.Content,
+			"images":         parseImages(note.Images),
 			"content_format": note.ContentFormat,
-			"type":         note.Type,
-			"video_url":    note.VideoURL,
-			"published_at": note.PublishedAt,
-			"created_at":   note.CreatedAt,
+			"type":           note.Type,
+			"video_url":      note.VideoURL,
+			"published_at":   note.PublishedAt,
+			"created_at":     note.CreatedAt,
 		},
 	})
 }
@@ -126,16 +126,16 @@ func (h *NoteHandler) ListByUser(c *gin.Context) {
 	var nextCursor int64 = 0
 	for _, note := range notes {
 		resp = append(resp, gin.H{
-			"id":           note.ID,
-			"author_id":    note.AuthorID,
-			"title":        note.Title,
-			"content":      note.Content,
+			"id":             note.ID,
+			"author_id":      note.AuthorID,
+			"title":          note.Title,
+			"content":        note.Content,
 			"content_format": note.ContentFormat,
-			"images":       parseImages(note.Images),
-			"type":         note.Type,
-			"video_url":    note.VideoURL,
-			"published_at": note.PublishedAt,
-			"created_at":   note.CreatedAt,
+			"images":         parseImages(note.Images),
+			"type":           note.Type,
+			"video_url":      note.VideoURL,
+			"published_at":   note.PublishedAt,
+			"created_at":     note.CreatedAt,
 		})
 		nextCursor = note.ID
 	}
@@ -501,16 +501,16 @@ func (h *NoteHandler) ListFavorites(c *gin.Context) {
 	resp := make([]gin.H, 0, len(notes))
 	for _, note := range notes {
 		resp = append(resp, gin.H{
-			"id":           note.ID,
-			"author_id":    note.AuthorID,
-			"title":        note.Title,
-			"content":      note.Content,
+			"id":             note.ID,
+			"author_id":      note.AuthorID,
+			"title":          note.Title,
+			"content":        note.Content,
 			"content_format": note.ContentFormat,
-			"images":       parseImages(note.Images),
-			"type":         note.Type,
-			"video_url":    note.VideoURL,
-			"published_at": note.PublishedAt,
-			"created_at":   note.CreatedAt,
+			"images":         parseImages(note.Images),
+			"type":           note.Type,
+			"video_url":      note.VideoURL,
+			"published_at":   note.PublishedAt,
+			"created_at":     note.CreatedAt,
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{
@@ -848,4 +848,67 @@ func parseImages(imagesJSON string) []string {
 		return []string{}
 	}
 	return urls
+}
+
+// internal/handler/note_handler.go
+// 校验作者身份：版本只对作者开放
+func (h *NoteHandler) versionsCheck(c *gin.Context) (noteID, userID int64, ok bool) {
+	userID, ok = getUserIDFromContext(c)
+	if !ok {
+		c.JSON(401, gin.H{"code": 4010, "message": " "})
+		return
+	}
+	noteID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || noteID <= 0 {
+		c.JSON(400, gin.H{})
+		return
+	}
+	note, err := h.noteService.GetByID(c.Request.Context(), noteID)
+	if err != nil || note.AuthorID != userID {
+		c.JSON(403, gin.H{"code": 4030, "message": "无权查看"})
+		return
+	}
+	return noteID, userID, true
+}
+
+func (h *NoteHandler) ListVersions(c *gin.Context) {
+	noteID, _, ok := h.versionsCheck(c)
+	if !ok {
+		return
+	}
+	cursor, _ := strconv.ParseInt(c.DefaultQuery("cursor", "0"), 10, 64)
+	limit, _ := strconv.ParseInt(c.DefaultQuery("limit", "20"), 10, 64)
+	list, next, err := h.noteService.ListVersions(c.Request.Context(), noteID, cursor, limit)
+	if err != nil {
+		c.JSON(500, gin.H{"code": 5000, "message": " "})
+		return
+	}
+	c.JSON(200, gin.H{"code": 0, "message": "ok", "data": gin.H{"list": list, "next_cursor": next}})
+}
+
+func (h *NoteHandler) GetVersion(c *gin.Context) {
+	noteID, _, ok := h.versionsCheck(c)
+	if !ok {
+		return
+	}
+	vid, _ := strconv.ParseInt(c.Param("vid"), 10, 64)
+	v, err := h.noteService.GetVersion(c.Request.Context(), noteID, vid)
+	if err != nil {
+		c.JSON(404, gin.H{"code": 4040, "message": "version not found"})
+		return
+	}
+	c.JSON(200, gin.H{"code": 0, "message": "ok", "data": v})
+}
+
+func (h *NoteHandler) RestoreVersion(c *gin.Context) {
+	noteID, userID, ok := h.versionsCheck(c)
+	if !ok {
+		return
+	}
+	vid, _ := strconv.ParseInt(c.Param("vid"), 10, 64)
+	if err := h.noteService.RestoreVersion(c.Request.Context(), noteID, userID, vid); err != nil {
+		c.JSON(400, gin.H{"code": 4003, "message": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"code": 0, "message": "ok"})
 }

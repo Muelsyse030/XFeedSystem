@@ -555,6 +555,10 @@ func (s *FeedService) filterBlockedNotes(ctx context.Context, userID int64, note
 
 // 增量：新笔记/互动后，单条写入全局基础分 ZSET
 func (s *FeedService) UpsertNoteScore(ctx context.Context, noteID int64) error {
+	// 先确保打分 ZSET 存在：避免"全量失效后单条 ZADD 重建出只有 1 条的 ZSET"的竞态
+	if err := s.ensureFeedEngine(ctx, cache.FeedEngineKey(0)); err != nil {
+		return err
+	}
 	note, err := s.repo.GetScoringFields(ctx, noteID)
 	if err != nil {
 		return err

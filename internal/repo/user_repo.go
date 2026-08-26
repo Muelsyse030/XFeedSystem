@@ -24,6 +24,7 @@ type UserRepo interface {
 	ListFollowing(ctx context.Context, userID int64, cursor time.Time, limit int) ([]*model.Follow, error)
 	ListFollowers(ctx context.Context, userId int64, cursor time.Time, limit int) ([]*model.Follow, error)
 	SearchByUsername(ctx context.Context, keyword string, limit int) ([]*model.User, error)
+	FindByUsernames(ctx context.Context, usernames []string) ([]*model.User, error)
 }
 type GormUserRepo struct {
 	db *gorm.DB
@@ -166,4 +167,16 @@ func (r *GormUserRepo) ListFollowers(ctx context.Context, userID int64, cursor t
 	var followers []*model.Follow
 	err := q.Order("created_at DESC").Limit(limit).Find(&followers).Error
 	return followers, err
+}
+
+func (r *GormUserRepo) FindByUsernames(ctx context.Context, usernames []string) ([]*model.User, error) {
+	//TODO implement me
+	if len(usernames) == 0 {
+		return nil, nil
+	}
+	var users []*model.User
+	err := r.db.WithContext(ctx).
+		Where("username IN ? AND status = 1", usernames).
+		Find(&users).Error
+	return users, err
 }

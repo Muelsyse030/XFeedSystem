@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"regexp"
 	"strings"
 	"time"
 
@@ -24,7 +25,8 @@ var (
 	ErrCommentNotFound  = errors.New("comment not found")
 	ErrEmptyNoteContent = errors.New("title and content must not be empty")
 	ErrBlocked          = errors.New("无法互动：你已拉黑对方或被对方拉黑")
-	ErrContentTooLong = errors.New("content too long")
+	ErrContentTooLong   = errors.New("content too long")
+	ErrVersionNotFound  = errors.New("version not found")
 )
 
 func safeGo(fn func()) {
@@ -53,15 +55,31 @@ type NoteService struct {
 	notifSvc *NotificationService
 	block    *BlockService
 	topics   *TopicService
-	feed 	 *FeedService
+	feed     *FeedService
+	user     repo.UserRepo
 }
 
 const noteCacheTTL = 10 * time.Minute
 const authorNotesCacheTTL = 5 * time.Minute
 
+var mentionRe = regexp.MustCompile(`@([\p{L}\p{N}_-]{2,32})`)
+
+func extractMentions(content string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, m := range mentionRe.FindAllStringSubmatch(content, -1) {
+		name := m[1]
+		if !seen[name] {
+			seen[name] = true
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
 func NewNoteService(r repo.NoteRepo, c *cache.RedisCache, sr *repo.SearchRepo,
-	ns *NotificationService, b *BlockService, t *TopicService, f *FeedService) *NoteService {
-	return &NoteService{repo: r, cache: c, search: sr, notifSvc: ns, block: b, topics: t, feed: f}
+	ns *NotificationService, b *BlockService, t *TopicService, f *FeedService, us repo.UserRepo) *NoteService {
+	return &NoteService{repo: r, cache: c, search: sr, notifSvc: ns, block: b, topics: t, feed: f, user: us}
 }
 
 // invalidateNoteFeed 笔记级写操作后的缓存失效：
@@ -119,6 +137,10 @@ func (s *NoteService) Create(userID int64, title, content string, images []strin
 			logger.Sugar.Errorf("attach topics err: %v", err)
 		}
 	}
+	if s.notifSvc != nil {
+		s.notifyMentions(context.Background(), userID, note.ID, note.ID,
+			cursor.StripHTML(normalized), nil)
+	}
 	if s.cache != nil {
 		_ = s.cache.Delete(context.Background(), cache.NoteKey(note.ID), cache.NoteDetailRawKey(note.ID))
 		_ = s.cache.Delete(context.Background(),
@@ -127,7 +149,10 @@ func (s *NoteService) Create(userID int64, title, content string, images []strin
 		)
 	}
 	safeGo(func() {
-		_ = s.cache.InvalidateFeedEngineAll(context.Background())
+		if s.feed != nil {
+			// 增量 ZADD：新笔记直接进打分 ZSET，避免全量删除与后续写操作竞态
+			_ = s.feed.UpsertNoteScore(context.Background(), note.ID)
+		}
 		_ = s.cache.InvalidateFeedRawAll(context.Background())
 	})
 
@@ -298,7 +323,7 @@ func (s *NoteService) Unfavorite(ctx context.Context, noteID, userID int64) (boo
 		return false, err
 	}
 	deleted, err := s.repo.Unfavorite(ctx, noteID, userID)
-		if err == nil {
+	if err == nil {
 		s.invalidateNoteFeed(ctx, noteID)
 	}
 	return deleted, err
@@ -365,15 +390,31 @@ func (s *NoteService) CreateReply(ctx context.Context, userID, noteID, parentID,
 	if s.notifSvc != nil {
 		n := note
 		if parentID == 0 {
+			// 一级评论：通知笔记作者（类型 2）+ @提及
 			safeGo(func() {
 				s.notifSvc.Create(context.Background(), userID, n.AuthorID,
 					model.NotifTypeComment, comment.ID, noteID, "评论了你的笔记")
 			})
+			s.notifyMentions(context.Background(), userID, comment.ID, noteID, content,
+				map[int64]bool{n.AuthorID: true})
 		} else {
+			skip := map[int64]bool{userID: true}
+			// 被回复的评论作者 → 类型 7"回复了你的评论"
+			skip[replyToUserID] = true
 			safeGo(func() {
 				s.notifSvc.Create(context.Background(), userID, replyToUserID,
-					model.NotifTypeReply, comment.ID, noteID, "回复了你")
+					model.NotifTypeReplyComment, comment.ID, noteID, "回复了你的评论")
 			})
+			// 笔记作者（若不是被回复者）→ 类型 2"评论了你的笔记"，避免同一条回复打扰两次
+			if replyToUserID != n.AuthorID {
+				skip[n.AuthorID] = true
+				safeGo(func() {
+					s.notifSvc.Create(context.Background(), userID, n.AuthorID,
+						model.NotifTypeComment, comment.ID, noteID, "评论了你的笔记")
+				})
+			}
+			// 回复内容里的 @提及
+			s.notifyMentions(context.Background(), userID, comment.ID, noteID, content, skip)
 		}
 	}
 	return comment, nil
@@ -438,6 +479,21 @@ func (s *NoteService) Updata(ctx context.Context, noteID, authorID int64, title,
 			images = []string{cover}
 		}
 	}
+	if old, err := s.repo.GetByID(ctx, noteID); err == nil && old.AuthorID == authorID {
+		_ = s.repo.InsertNoteVersion(ctx, &model.NoteVersion{
+			NoteID:        old.ID,
+			AuthorID:      old.AuthorID,
+			Title:         old.Title,
+			Content:       old.Content,
+			Images:        old.Images,
+			VideoURL:      old.VideoURL,
+			Type:          old.Type,
+			ContentFormat: old.ContentFormat,
+			CreatedAt:     time.Now(),
+		})
+		_ = s.repo.TrimNoteVersions(ctx, noteID, 50) // 只保留最近 50 个版本
+	}
+
 	if err := s.repo.UpdataByAuthorID(ctx, noteID, authorID,
 		strings.TrimSpace(title), normalized, marshalImages(images),
 		normalizeNoteType(noteType), strings.TrimSpace(videoURL), format); err != nil {
@@ -503,5 +559,85 @@ func (s *NoteService) checkBlocked(ctx context.Context, currentUserID, targetUse
 	if blocked {
 		return ErrBlocked
 	}
+	return nil
+}
+
+func (s *NoteService) notifyMentions(ctx context.Context, actorID, targetID, noteID int64, content string, extraSkip map[int64]bool) {
+	names := extractMentions(content)
+	if len(names) == 0 || s.notifSvc == nil {
+		return
+	}
+	users, err := s.user.FindByUsernames(ctx, names)
+	if err != nil || len(users) == 0 {
+		return
+	}
+	for _, u := range users {
+		if u.ID == actorID || (extraSkip != nil && extraSkip[u.ID]) {
+			continue
+		}
+		if s.block != nil {
+			if blocked, err := s.block.IsBlockedEitherWay(ctx, actorID, u.ID); err == nil && blocked {
+				continue
+			}
+		}
+		s.notifSvc.Create(ctx, actorID, u.ID, model.NotifTypeMention, targetID, noteID, "@提到了你")
+	}
+}
+
+// 版本列表（只返回 id + 时间，不返回正文，省流量）
+func (s *NoteService) ListVersions(ctx context.Context, noteID, cursor, limit int64) ([]*model.NoteVersion, int64, error) {
+	return s.repo.ListNoteVersions(ctx, noteID, cursor, int(limit))
+}
+
+func (s *NoteService) GetVersion(ctx context.Context, noteID, versionID int64) (*model.NoteVersion, error) {
+	return s.repo.GetNoteVersion(ctx, versionID, noteID)
+}
+
+// RestoreVersion 恢复某个版本：先快照当前状态（恢复也留痕），再整行写回
+func (s *NoteService) RestoreVersion(ctx context.Context, noteID, authorID, versionID int64) error {
+	v, err := s.repo.GetNoteVersion(ctx, versionID, noteID)
+	if err != nil {
+		return ErrVersionNotFound
+	}
+
+	// 快照当前状态，保持历史连续
+	if current, err := s.repo.GetByID(ctx, noteID); err == nil {
+		_ = s.repo.InsertNoteVersion(ctx, &model.NoteVersion{
+			NoteID: current.ID, AuthorID: current.AuthorID,
+			Title: current.Title, Content: current.Content, Images: current.Images,
+			VideoURL: current.VideoURL, Type: current.Type, ContentFormat: current.ContentFormat,
+			CreatedAt: time.Now(),
+		})
+	}
+
+	// 整行写回（含标题/正文/图片/视频/类型/格式）
+	if err := s.repo.UpdataByAuthorID(ctx, noteID, authorID,
+		v.Title, v.Content, v.Images, v.Type, v.VideoURL, v.ContentFormat); err != nil {
+		return err
+	}
+
+	// 主题按恢复后的正文重新提取（版本表不存 topics）
+	if s.topics != nil {
+		_ = s.topics.ReplaceTopics(ctx, noteID,
+			s.topics.ExtractTopics(cursor.StripHTML(v.Content), nil))
+	}
+
+	// ── 复用 Updata 的失效逻辑：缓存 + 搜索 + feed ──
+	_ = s.cache.Delete(ctx, cache.NoteKey(noteID))
+	_ = s.cache.Delete(ctx, cache.NoteDetailRawKey(noteID))
+	_ = s.cache.Delete(ctx, cache.UserNotesKey(authorID, 10))
+	_ = s.cache.Delete(ctx, cache.UserNotesKey(authorID, 20))
+	if s.search != nil {
+		safeGo(func() {
+			_ = s.search.Index(context.Background(), &repo.NoteDocument{
+				ID: noteID, Title: v.Title, Content: cursor.StripHTML(v.Content),
+				AuthorID: authorID, PublishedAt: time.Now().Unix(),
+			})
+		})
+	}
+	if s.feed != nil {
+		_ = s.feed.UpsertNoteScore(ctx, noteID) // 恢复改变了摘要，刷新打分
+	}
+	_ = s.cache.InvalidateFeedRawAll(ctx)
 	return nil
 }
