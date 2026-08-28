@@ -247,7 +247,7 @@ func (c *RedisCache) ZAddAll(ctx context.Context, key string, scores map[string]
 	for m, s := range scores {
 		pipe.ZAdd(ctx, key, redis.Z{Score: s, Member: m})
 	}
-	if ttl > 0 {                    // ← 关键：ttl<=0 时不发 EXPIRE，key 永久保留
+	if ttl > 0 { // ← 关键：ttl<=0 时不发 EXPIRE，key 永久保留
 		pipe.Expire(ctx, key, ttl)
 	}
 	_, err := pipe.Exec(ctx)
@@ -269,7 +269,7 @@ func (c *RedisCache) ZAddFeed(ctx context.Context, key string, scores map[int64]
 	for id, s := range scores {
 		pipe.ZAdd(ctx, key, redis.Z{Score: float64(s), Member: strconv.FormatInt(id, 10)})
 	}
-	if ttl > 0 {                    // ← 关键：ttl<=0 时不发 EXPIRE，key 永久保留
+	if ttl > 0 { // ← 关键：ttl<=0 时不发 EXPIRE，key 永久保留
 		pipe.Expire(ctx, key, ttl)
 	}
 	_, err := pipe.Exec(ctx)
@@ -301,15 +301,15 @@ func (c *RedisCache) IncrBy(ctx context.Context, key string, n int64) (int64, er
 	return c.client.IncrBy(ctx, key, n).Result()
 }
 
-func (c *RedisCache) IncrMany(ctx context.Context , keys []string , n int64) error {
-	if len(keys) == 0{
+func (c *RedisCache) IncrMany(ctx context.Context, keys []string, n int64) error {
+	if len(keys) == 0 {
 		return nil
 	}
 	pipe := c.client.TxPipeline()
-	for _ , k := range keys {
-		pipe.IncrBy(ctx , k ,n)
+	for _, k := range keys {
+		pipe.IncrBy(ctx, k, n)
 	}
-	_ , err := pipe.Exec(ctx)
+	_, err := pipe.Exec(ctx)
 	return err
 
 }
@@ -330,33 +330,35 @@ func (c *RedisCache) ScanKeys(ctx context.Context, pattern string, batch int64) 
 	}
 	return keys, nil
 }
+
 // 扫描并删除所有匹配 pattern 的 key
-func (c *RedisCache) DeleteByPattern(ctx context.Context , pattern string) error {
-	keys ,err := c.ScanKeys(ctx,pattern,500)
+func (c *RedisCache) DeleteByPattern(ctx context.Context, pattern string) error {
+	keys, err := c.ScanKeys(ctx, pattern, 500)
 	if err != nil {
 		return err
 	}
-	return c.Delete(ctx,keys...)
+	return c.Delete(ctx, keys...)
 }
 
-//失效全量打分引擎 ZSET,下次读取 feed 时会按最新数据懒重建
+// 失效全量打分引擎 ZSET,下次读取 feed 时会按最新数据懒重建
 func (c *RedisCache) InvalidateFeedEngineAll(ctx context.Context) error {
 	return c.DeleteByPattern(ctx, FeedEngineKeyPrefix()+"*")
 }
 
-//失效某个用户的打分引擎 ZSET
+// 失效某个用户的打分引擎 ZSET
 func (c *RedisCache) InvalidateFeedEngineForUser(ctx context.Context, userID int64) error {
 	return c.Delete(ctx, FeedEngineKey(userID))
 }
 
-//效所有 feed 页字节缓存
+// 效所有 feed 页字节缓存
 func (c *RedisCache) InvalidateFeedRawAll(ctx context.Context) error {
 	if err := c.DeleteByPattern(ctx, FeedForYouRawPrefix()+"*"); err != nil {
 		return err
 	}
 	return c.DeleteByPattern(ctx, FeedPageRawPrefix()+"*")
 }
-//失效某个用户的 feed 页字节缓存
+
+// 失效某个用户的 feed 页字节缓存
 func (c *RedisCache) InvalidateFeedRawForUser(ctx context.Context, userID int64) error {
 	u := strconv.FormatInt(userID, 10)
 	if err := c.DeleteByPattern(ctx, FeedForYouRawPrefix()+u+":*"); err != nil {
@@ -364,7 +366,12 @@ func (c *RedisCache) InvalidateFeedRawForUser(ctx context.Context, userID int64)
 	}
 	return c.DeleteByPattern(ctx, FeedPageRawPrefix()+u+":*")
 }
-//失效所有话题页 feed 字节缓存
+
+func (c *RedisCache) SetNX(ctx context.Context, key, value string, ttl time.Duration) (bool, error) {
+	return c.client.SetNX(ctx, key, value, ttl).Result()
+}
+
+// 失效所有话题页 feed 字节缓存
 func (c *RedisCache) InvalidateTopicFeedRaw(ctx context.Context) error {
 	return c.DeleteByPattern(ctx, TopicFeedRawPrefix()+"*")
 }
@@ -402,15 +409,15 @@ func FeedPageRawKey(userID int64, limit int, cursor string) string {
 }
 
 func NoteImpKey(noteID int64) string {
-	return fmt.Sprintf("stats:imp:%d",noteID)
+	return fmt.Sprintf("stats:imp:%d", noteID)
 }
 
 func NoteReadKey(noteID int64) string {
-	return fmt.Sprintf("stats:read:%d",noteID)
+	return fmt.Sprintf("stats:read:%d", noteID)
 }
 
 func UserReadKey(userID int64) string {
-	return fmt.Sprintf("user:read:%d",userID)
+	return fmt.Sprintf("user:read:%d", userID)
 }
 
 func FeedEngineKeyPrefix() string {
@@ -428,4 +435,3 @@ func FeedPageRawPrefix() string {
 func TopicFeedRawPrefix() string {
 	return fmt.Sprintf("topic:feed:raw:")
 }
-
