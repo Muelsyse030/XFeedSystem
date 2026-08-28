@@ -20,9 +20,9 @@ func NewNotificationService(r repo.NotificationRepo, ur repo.UserRepo, c *cache.
 	return &NotificationService{repo: r, userRepo: ur, cache: c}
 }
 
-func (s *NotificationService) Create(ctx context.Context, actorID, userID int64, typ int8, targetID, targetNoteID int64, message string) {
+func (s *NotificationService) Create(ctx context.Context, actorID, userID int64, typ int8, targetID, targetNoteID int64, message string, eventID int64) error {
 	if actorID == userID {
-		return
+		return nil
 	}
 	notif := &model.Notification{
 		UserID:       userID,
@@ -32,13 +32,21 @@ func (s *NotificationService) Create(ctx context.Context, actorID, userID int64,
 		TargetNoteID: targetNoteID,
 		Message:      message,
 	}
-	if err := s.repo.Create(ctx, notif); err != nil {
-		logger.Sugar.Warnf("create notification failed :%v", err)
-		return
+	if eventID != 0 {
+		id := eventID
+		notif.EventID = id
 	}
-	if s.cache != nil {
-		_, _ = s.cache.Incr(ctx, cache.NotifUnreadKey(userID))
+	created, err := s.repo.Create(ctx, notif)
+	if err != nil {
+		logger.Sugar.Errorf("create notification err: %v", err)
+		return err
 	}
+	if created && s.cache != nil {
+		if _, err := s.cache.Incr(ctx, cache.NotifUnreadKey(userID)); err != nil {
+			logger.Sugar.Warnf("cache incr err: %v", err)
+		}
+	}
+	return nil
 }
 
 type NotifItem struct {

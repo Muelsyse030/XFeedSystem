@@ -28,3 +28,11 @@ meilisearch:
   # 生产环境通过 XFEED_MEILISEARCH_API_KEY 覆盖
   api_key: "masterKey"
   index: "notes"
+
+streams:
+  key: "xfeed:events"
+
+worker:
+  relay_enabled: true
+  batch: 100
+  poll_interval_ms: 200
