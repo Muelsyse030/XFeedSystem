@@ -1,6 +1,7 @@
 package repo
 
 import (
+	"XFeedSystem/internal/events"
 	"XFeedSystem/internal/model"
 	"XFeedSystem/internal/outbox"
 	"context"
@@ -85,23 +86,36 @@ func (r *GormUserRepo) GetByIDs(ids []int64) ([]*model.User, error) {
 	}
 	return users, nil
 }
-func (r *GormUserRepo) Followbyid(ctx context.Context, user_id int64, follow_id int64) (bool, error) {
-	follow := &model.Follow{
-		UserID:   user_id,
-		FollowID: follow_id,
-	}
-	err := r.db.WithContext(ctx).
-		Clauses(clause.OnConflict{DoNothing: true}).
-		Create(follow).Error
-	if err != nil {
-		return false, err
-	}
-	return true, nil
+func (r *GormUserRepo) Followbyid(ctx context.Context, userID, followID int64) (bool, error) {
+	created := false
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		follow := &model.Follow{UserID: userID, FollowID: followID}
+		res := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(follow)
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return nil // 已经关注过：状态没变，不发事件
+		}
+		created = true
+		return r.outbox.EnqueueTx(ctx, tx, events.UserFollowed, events.Payload{
+			AuthorID: followID, // 通知接收方
+			ActorID:  userID,   // 关注者
+		})
+	})
+	return created, err
 }
 func (r *GormUserRepo) Delete(ctx context.Context, userID, followID int64) error {
-	return r.db.WithContext(ctx).
-		Where("user_id = ? AND follow_id = ?", userID, followID).
-		Delete(&model.Follow{}).Error
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("user_id = ? AND follow_id = ?", userID, followID).
+			Delete(&model.Follow{}).Error; err != nil {
+			return err
+		}
+		return r.outbox.EnqueueTx(ctx, tx, events.UserUnfollowed, events.Payload{
+			AuthorID: followID,
+			ActorID:  userID,
+		})
+	})
 }
 func (r *GormUserRepo) Exists(ctx context.Context, userID, followID int64) (bool, error) {
 	var count int64

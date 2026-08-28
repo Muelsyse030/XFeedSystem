@@ -11,7 +11,7 @@ import (
 )
 
 type NoteRepo interface {
-	Create(note *model.Note) (*model.Note, error)
+	Create(ctx context.Context, note *model.Note, mentionNames []string) (*model.Note, error)
 	GetByID(ctx context.Context, id int64) (*model.Note, error)
 	DeleteByID(ctx context.Context, id int64, authorID int64) error
 	ListByAuthorID(ctx context.Context, authorID int64, cursor int64, limit int) ([]*model.Note, error)
@@ -25,7 +25,7 @@ type NoteRepo interface {
 	IsFavorite(ctx context.Context, noteID, userID int64) (bool, error)
 	FavoriteList(ctx context.Context, userID int64, cursor int64, limit int) ([]*model.Note, int64, error)
 
-	CreateComment(ctx context.Context, userID, noteID, parentID, replyToUserID int64, content string) (*model.NoteComment, error)
+	CreateComment(ctx context.Context, userID, noteID, parentID, replyToUserID int64, content string, noteAuthorID int64, mentionNames []string) (*model.NoteComment, error)
 	GetCommentByID(ctx context.Context, commentID int64) (*model.NoteComment, error)
 	ListCommentsByNoteID(ctx context.Context, noteID, cursor int64, limit int) ([]*model.NoteComment, error)
 	ListRepliesByParentID(ctx context.Context, noteID, parentID int64, limit int) ([]*model.NoteComment, error)
@@ -47,8 +47,19 @@ func NewGormNoteRepo(db *gorm.DB, outbox *outbox.Repo) *GormNoteRepo {
 		outbox: outbox,
 	}
 }
-func (r *GormNoteRepo) Create(note *model.Note) (*model.Note, error) {
-	return note, r.db.Create(note).Error
+func (r *GormNoteRepo) Create(ctx context.Context, note *model.Note, mentionNames []string) (*model.Note, error) {
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(note).Error; err != nil {
+			return err
+		}
+		return r.outbox.EnqueueTx(ctx, tx, events.NoteCreated, events.Payload{
+			NoteID:       note.ID, // AUTO_INCREMENT 已回填
+			AuthorID:     note.AuthorID,
+			ActorID:      note.AuthorID,
+			MentionNames: mentionNames,
+		})
+	})
+	return note, err
 }
 
 func (r *GormNoteRepo) ListByAuthorID(ctx context.Context, authorID int64, cursor int64, limit int) ([]*model.Note, error) {
@@ -83,12 +94,16 @@ func (r *GormNoteRepo) GetByID(ctx context.Context, id int64) (*model.Note, erro
 	return &note, nil
 }
 func (r *GormNoteRepo) DeleteByID(ctx context.Context, id int64, authorID int64) error {
-	return r.db.WithContext(ctx).
-		Model(&model.Note{}).
-		Where("id = ? AND author_id = ? AND status = ?", id, authorID, model.NoteStatusPublished).
-		Updates(map[string]interface{}{
-			"status": model.NoteStatusDeleted,
-		}).Error
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&model.Note{}).
+			Where("id = ? AND author_id = ? AND status = ?", id, authorID, model.NoteStatusPublished).
+			Updates(map[string]interface{}{"status": model.NoteStatusDeleted}).Error; err != nil {
+			return err
+		}
+		return r.outbox.EnqueueTx(ctx, tx, events.NoteDeleted, events.Payload{
+			NoteID: id, AuthorID: authorID,
+		})
+	})
 }
 func (r *GormNoteRepo) Like(ctx context.Context, noteID, userID, authorID int64) (created bool, err error) {
 	err = r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -243,7 +258,7 @@ func (r *GormNoteRepo) FavoriteList(ctx context.Context, userID int64, cursor in
 	}
 	return out, nextCursor, nil
 }
-func (r *GormNoteRepo) CreateComment(ctx context.Context, userID, noteID, parentID, replyToUserID int64, content string) (*model.NoteComment, error) {
+func (r *GormNoteRepo) CreateComment(ctx context.Context, userID, noteID, parentID, replyToUserID int64, content string, noteAuthorID int64, mentionNames []string) (*model.NoteComment, error) {
 	comment := &model.NoteComment{
 		NoteID:        noteID,
 		UserID:        userID,
@@ -256,13 +271,24 @@ func (r *GormNoteRepo) CreateComment(ctx context.Context, userID, noteID, parent
 			return err
 		}
 		if parentID == 0 {
-			return tx.Model(&model.Note{}).Where("id = ?", noteID).
-				Update("comment_count", gorm.Expr("comment_count + 1")).Error
+			if err := tx.Model(&model.Note{}).Where("id = ?", noteID).
+				Update("comment_count", gorm.Expr("comment_count + 1")).Error; err != nil {
+				return err
+			}
 		}
-		return nil
+		return r.outbox.EnqueueTx(ctx, tx, events.CommentCreated, events.Payload{
+			NoteID:        noteID,
+			AuthorID:      noteAuthorID,
+			ActorID:       userID,
+			CommentID:     comment.ID,
+			ParentID:      parentID,
+			ReplyToUserID: replyToUserID,
+			MentionNames:  mentionNames,
+		})
 	})
 	return comment, err
 }
+
 func (r *GormNoteRepo) GetCommentByID(ctx context.Context, commentID int64) (*model.NoteComment, error) {
 	var comment model.NoteComment
 	if err := r.db.WithContext(ctx).
@@ -312,32 +338,39 @@ func (r *GormNoteRepo) DeleteComment(ctx context.Context, commentID int64, userI
 			return err
 		}
 		if cm.ParentID == 0 {
-			return tx.Model(&model.Note{}).Where("id = ?", cm.NoteID).
-				Update("comment_count", gorm.Expr("GREATEST(comment_count - 1, 0)")).Error
+			if err := tx.Model(&model.Note{}).Where("id = ?", cm.NoteID).
+				Update("comment_count", gorm.Expr("GREATEST(comment_count - 1, 0)")).Error; err != nil {
+				return err
+			}
 		}
-		return nil
+		return r.outbox.EnqueueTx(ctx, tx, events.CommentDeleted, events.Payload{
+			NoteID: cm.NoteID, CommentID: commentID, ActorID: userID,
+		})
 	})
 }
 
 func (r *GormNoteRepo) UpdataByAuthorID(ctx context.Context, noteID, authorID int64, title, content, images string, noteType int8, videoURL string, contentFormat int8) error {
-	res := r.db.WithContext(ctx).
-		Model(&model.Note{}).
-		Where("id = ? AND author_id = ? AND status = ?", noteID, authorID, model.NoteStatusPublished).
-		Updates(map[string]interface{}{
-			"title":          title,
-			"content":        content,
-			"images":         images,
-			"type":           noteType,
-			"video_url":      videoURL,
-			"content_format": contentFormat,
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		res := tx.Model(&model.Note{}).
+			Where("id = ? AND author_id = ? AND status = ?", noteID, authorID, model.NoteStatusPublished).
+			Updates(map[string]interface{}{
+				"title":          title,
+				"content":        content,
+				"images":         images,
+				"type":           noteType,
+				"video_url":      videoURL,
+				"content_format": contentFormat,
+			})
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return gorm.ErrRecordNotFound // 保持原有语义
+		}
+		return r.outbox.EnqueueTx(ctx, tx, events.NoteUpdated, events.Payload{
+			NoteID: noteID, AuthorID: authorID,
 		})
-	if res.Error != nil {
-		return res.Error
-	}
-	if res.RowsAffected == 0 {
-		return gorm.ErrRecordNotFound
-	}
-	return nil
+	})
 }
 
 func (r *GormNoteRepo) TrimNoteVersions(ctx context.Context, noteID int64, keep int) error {

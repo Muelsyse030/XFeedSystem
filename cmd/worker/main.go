@@ -13,12 +13,14 @@ import (
 	"XFeedSystem/internal/repo"
 	"XFeedSystem/internal/service"
 	"context"
+	"errors"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"gorm.io/gorm"
 )
 
 func main() {
@@ -112,7 +114,7 @@ func feedHandler(feed *service.FeedService, rc *cache.RedisCache) queue.Handler 
 		case events.NoteCreated, events.NoteUpdated,
 			events.NoteLiked, events.NoteUnliked,
 			events.NoteFavorited, events.NoteUnfavorited,
-			events.CommentCreated:
+			events.CommentCreated, events.CommentDeleted:
 			if err := feed.UpsertNoteScore(ctx, p.NoteID); err != nil {
 				return err
 			}
@@ -120,14 +122,11 @@ func feedHandler(feed *service.FeedService, rc *cache.RedisCache) queue.Handler 
 			if err := feed.RemoveNoteScore(ctx, p.NoteID); err != nil {
 				return err
 			}
-		case events.UserFollowed:
-			// 关注关系变了 → 该用户已缓存的个性化 feed 页失效（打分 ZSET 本身不变）
+		case events.UserFollowed, events.UserUnfollowed:
 			return rc.InvalidateFeedRawForUser(ctx, p.ActorID)
 		default:
 			return nil
 		}
-		// 打分 ZSET 变了 → 所有 feed 页字节缓存失效。
-		// 量级上来后可以去掉这步，只靠页缓存 TTL 兜底。
 		return rc.InvalidateFeedRawAll(ctx)
 	}
 }
@@ -139,7 +138,15 @@ func searchHandler(sr *repo.SearchRepo, nr *repo.GormNoteRepo) queue.Handler {
 		switch typ {
 		case events.NoteCreated, events.NoteUpdated:
 			n, err := nr.GetByID(ctx, p.NoteID)
-			if err != nil || n.Status != model.NoteStatusPublished {
+			if err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					// 笔记确实不存在 → 清理索引
+					return sr.Delete(ctx, p.NoteID)
+				}
+				// MySQL 超时/断连等临时错误：绝不能当成 NotFound 误删索引，返回 error 等待重试
+				return err
+			}
+			if n.Status != model.NoteStatusPublished {
 				return sr.Delete(ctx, p.NoteID)
 			}
 			return sr.Index(ctx, &repo.NoteDocument{

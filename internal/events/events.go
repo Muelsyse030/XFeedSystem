@@ -24,6 +24,8 @@ const (
 	NoteUnfavorited = "note.unfavorited"
 	CommentCreated  = "comment.created"
 	UserFollowed    = "user.followed"
+	CommentDeleted  = "comment.deleted"
+	UserUnfollowed  = "user.unfollowed"
 )
 
 // Payload 是所有事件共用的负载，字段按事件类型取用。

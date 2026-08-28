@@ -2,9 +2,7 @@ package service
 
 import (
 	"XFeedSystem/internal/cache"
-	"XFeedSystem/internal/events"
 	"XFeedSystem/internal/model"
-	"XFeedSystem/internal/outbox"
 	"XFeedSystem/internal/pkg/cursor"
 	"XFeedSystem/internal/pkg/logger"
 	"XFeedSystem/internal/repo"
@@ -56,7 +54,6 @@ type NoteService struct {
 	block  *BlockService
 	topics *TopicService
 	user   repo.UserRepo
-	outbox *outbox.Repo
 }
 
 const noteCacheTTL = 10 * time.Minute
@@ -78,8 +75,8 @@ func extractMentions(content string) []string {
 }
 
 func NewNoteService(r repo.NoteRepo, c *cache.RedisCache,
-	b *BlockService, t *TopicService, us repo.UserRepo, ob *outbox.Repo) *NoteService {
-	return &NoteService{repo: r, cache: c, block: b, topics: t, user: us, outbox: ob}
+	b *BlockService, t *TopicService, us repo.UserRepo) *NoteService {
+	return &NoteService{repo: r, cache: c, block: b, topics: t, user: us}
 }
 
 // invalidateNoteFeed 笔记级写操作后的缓存失效：
@@ -121,7 +118,7 @@ func (s *NoteService) Create(userID int64, title, content string, images []strin
 		ContentFormat: format,
 		PublishedAt:   time.Now(),
 	}
-	if _, err := s.repo.Create(note); err != nil {
+	if _, err := s.repo.Create(context.Background(), note, extractMentions(cursor.StripHTML(normalized))); err != nil {
 		return nil, err
 	}
 
@@ -139,14 +136,6 @@ func (s *NoteService) Create(userID int64, title, content string, images []strin
 			cache.UserNotesKey(note.AuthorID, 20),
 		)
 	}
-
-	_ = s.outbox.Enqueue(context.Background(), events.NoteCreated, events.Payload{
-		NoteID:       note.ID,
-		AuthorID:     note.AuthorID,
-		ActorID:      userID,
-		MentionNames: extractMentions(cursor.StripHTML(normalized)),
-	})
-
 	return note, nil
 }
 
@@ -201,10 +190,6 @@ func (s *NoteService) Delete(ctx context.Context, id int64, authorID int64) erro
 		cache.UserNotesKey(authorID, 10),
 		cache.UserNotesKey(authorID, 20),
 	)
-	_ = s.outbox.Enqueue(context.Background(), events.NoteDeleted, events.Payload{
-		NoteID:   id,
-		AuthorID: authorID,
-	})
 	return nil
 }
 
@@ -342,20 +327,12 @@ func (s *NoteService) CreateReply(ctx context.Context, userID, noteID, parentID,
 			replyToUserID = parent.UserID
 		}
 	}
-	comment, err := s.repo.CreateComment(ctx, userID, noteID, parentID, replyToUserID, content)
+	comment, err := s.repo.CreateComment(ctx, userID, noteID, parentID, replyToUserID, content,
+		note.AuthorID, extractMentions(content))
 	if err != nil {
 		return nil, err
 	}
 	s.invalidateNoteFeed(ctx, noteID)
-	_ = s.outbox.Enqueue(context.Background(), events.CommentCreated, events.Payload{
-		NoteID:        noteID,
-		AuthorID:      note.AuthorID,
-		ActorID:       userID,
-		CommentID:     comment.ID,
-		ParentID:      parentID,
-		ReplyToUserID: replyToUserID,
-		MentionNames:  extractMentions(content),
-	})
 	return comment, nil
 }
 
@@ -451,9 +428,6 @@ func (s *NoteService) Updata(ctx context.Context, noteID, authorID int64, title,
 		cache.UserNotesKey(authorID, 10),
 		cache.UserNotesKey(authorID, 20),
 	)
-	_ = s.outbox.Enqueue(context.Background(), events.NoteUpdated, events.Payload{
-		NoteID: noteID, AuthorID: authorID,
-	})
 	return nil
 }
 
@@ -528,8 +502,5 @@ func (s *NoteService) RestoreVersion(ctx context.Context, noteID, authorID, vers
 	_ = s.cache.Delete(ctx, cache.NoteDetailRawKey(noteID))
 	_ = s.cache.Delete(ctx, cache.UserNotesKey(authorID, 10))
 	_ = s.cache.Delete(ctx, cache.UserNotesKey(authorID, 20))
-	_ = s.outbox.Enqueue(context.Background(), events.NoteUpdated, events.Payload{
-		NoteID: noteID, AuthorID: authorID,
-	})
 	return nil
 }

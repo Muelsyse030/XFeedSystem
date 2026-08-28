@@ -53,7 +53,7 @@ func SetupRouter(db *gorm.DB, appCfg config.Config) *gin.Engine {
 	adminService := service.NewAdminService(adminRepo)
 	adminHandler := handler.NewAdminHandler(adminService)
 
-	userService := service.NewUserService(userRepo, redisCache, blockService, outboxRepo)
+	userService := service.NewUserService(userRepo, redisCache, blockService)
 	userHandler := handler.NewUserHandler(userService, jwtService, redisCache)
 
 	statsRepo := repo.NewGormStatsRepo(db)
@@ -64,7 +64,7 @@ func SetupRouter(db *gorm.DB, appCfg config.Config) *gin.Engine {
 	feedHandler := handler.NewFeedHandler(feedService, redisCache)
 
 	noteRepo := repo.NewGormNoteRepo(db, outboxRepo)
-	noteService := service.NewNoteService(noteRepo, redisCache, blockService, topicService, userRepo, outboxRepo)
+	noteService := service.NewNoteService(noteRepo, redisCache, blockService, topicService, userRepo)
 	noteHandler := handler.NewNoteHandler(noteService, userRepo, redisCache, statsService)
 
 	topicHandler := handler.NewTopicHandler(topicService, feedService, redisCache)
