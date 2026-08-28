@@ -131,7 +131,7 @@ func (s *UserService) Follow(ctx context.Context, userID int64, followID int64) 
 			return ErrBlockedByTarget
 		}
 	}
-	if err := s.repo.Followbyid(ctx, userID, followID); err != nil {
+	if _, err := s.repo.Followbyid(ctx, userID, followID); err != nil {
 		return errors.New("关注失败")
 	}
 	if s.cache != nil {

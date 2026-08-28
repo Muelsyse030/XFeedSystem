@@ -13,7 +13,6 @@ import (
 	"XFeedSystem/internal/repo"
 	"XFeedSystem/internal/service"
 	"context"
-	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
@@ -50,12 +49,13 @@ func main() {
 	searchRepo := repo.NewSearchRepo(cfg.Meilisearch.Host, cfg.Meilisearch.APIKey, cfg.Meilisearch.Index)
 	_ = searchRepo.EnsureIndex(ctx)
 
-	userRepo := repo.NewGormUserRepo(db)
+	outboxRepo := outbox.NewRepo(db)
+	userRepo := repo.NewGormUserRepo(db, outboxRepo)
 	blockService := service.NewBlockService(repo.NewGormBlockRepo(db), userRepo, redisCache)
 	notifService := service.NewNotificationService(repo.NewGormNotificationRepo(db), userRepo, redisCache)
 	statsService := service.NewStatsService(repo.NewGormStatsRepo(db), redisCache)
 	feedService := service.NewFeedService(repo.NewGormFeedRepo(db), userRepo, redisCache, searchRepo, blockService, statsService)
-	noteRepo := repo.NewGormNoteRepo(db, outbox.NewRepo(db))
+	noteRepo := repo.NewGormNoteRepo(db, outboxRepo)
 
 	// 计数器落库与打分周期重算只保留一份：
 	// 原来它们挂在每个 API 实例上，多实例后会重复执行（计数器还会重复累加），
@@ -91,7 +91,7 @@ func main() {
 
 	start(events.GroupFeed, feedHandler(feedService, redisCache))
 	start(events.GroupSearch, searchHandler(searchRepo, noteRepo))
-	start(events.GroupNotify, notifyHandler(notifService, userRepo, blockService, redisCache))
+	start(events.GroupNotify, notifyHandler(notifService, userRepo, blockService))
 
 	// 等待退出信号
 	quit := make(chan os.Signal, 1)
@@ -161,37 +161,31 @@ func searchHandler(sr *repo.SearchRepo, nr *repo.GormNoteRepo) queue.Handler {
 // notifyHandler 创建站内通知并维护未读数。
 // at-least-once 语义下同一事件可能被投递两次，所以先用 event_id 去重：
 // SET NX 成功说明第一次见，失败说明之前已处理过。
-func notifyHandler(ns *service.NotificationService, ur repo.UserRepo, bs *service.BlockService, rc *cache.RedisCache) queue.Handler {
+func notifyHandler(ns *service.NotificationService, ur repo.UserRepo, bs *service.BlockService) queue.Handler {
 	return func(ctx context.Context, typ string, p events.Payload) error {
-		if p.EventID == 0 {
-			return nil
-		}
-		dedupKey := fmt.Sprintf("notify:dedup:%d", p.EventID)
-		ok, err := rc.SetNX(ctx, dedupKey, "1", 7*24*time.Hour)
-		if err != nil {
-			return err
-		}
-		if !ok {
-			return nil // 已处理过
-		}
-
 		switch typ {
 		case events.NoteLiked:
-			ns.Create(ctx, p.ActorID, p.AuthorID, model.NotifTypeLike, p.NoteID, p.NoteID, "赞了你的笔记")
+			return ns.Create(ctx, p.ActorID, p.AuthorID, model.NotifTypeLike, p.NoteID, p.NoteID, "赞了你的笔记", p.EventID)
 		case events.NoteFavorited:
-			ns.Create(ctx, p.ActorID, p.AuthorID, model.NotifTypeFavorite, p.NoteID, p.NoteID, "收藏了你的笔记")
+			return ns.Create(ctx, p.ActorID, p.AuthorID, model.NotifTypeFavorite, p.NoteID, p.NoteID, "收藏了你的笔记", p.EventID)
 		case events.CommentCreated:
 			if p.ParentID == 0 {
-				ns.Create(ctx, p.ActorID, p.AuthorID, model.NotifTypeComment, p.CommentID, p.NoteID, "评论了你的笔记")
+				if err := ns.Create(ctx, p.ActorID, p.AuthorID, model.NotifTypeComment, p.CommentID, p.NoteID, "评论了你的笔记", p.EventID); err != nil {
+					return err
+				}
 			} else {
-				ns.Create(ctx, p.ActorID, p.ReplyToUserID, model.NotifTypeReplyComment, p.CommentID, p.NoteID, "回复了你的评论")
+				if err := ns.Create(ctx, p.ActorID, p.ReplyToUserID, model.NotifTypeReplyComment, p.CommentID, p.NoteID, "回复了你的评论", p.EventID); err != nil {
+					return err
+				}
 				if p.ReplyToUserID != p.AuthorID {
-					ns.Create(ctx, p.ActorID, p.AuthorID, model.NotifTypeComment, p.CommentID, p.NoteID, "评论了你的笔记")
+					if err := ns.Create(ctx, p.ActorID, p.AuthorID, model.NotifTypeComment, p.CommentID, p.NoteID, "评论了你的笔记", p.EventID); err != nil {
+						return err
+					}
 				}
 			}
-			createMentions(ctx, ns, ur, bs, p)
+			return createMentions(ctx, ns, ur, bs, p)
 		case events.UserFollowed:
-			ns.Create(ctx, p.ActorID, p.AuthorID, model.NotifTypeFollow, p.ActorID, 0, "关注了你")
+			return ns.Create(ctx, p.ActorID, p.AuthorID, model.NotifTypeFollow, p.ActorID, 0, "关注了你", p.EventID)
 		}
 		return nil
 	}
@@ -199,13 +193,16 @@ func notifyHandler(ns *service.NotificationService, ur repo.UserRepo, bs *servic
 
 // createMentions 复刻原 NoteService.notifyMentions 的逻辑：
 // 用户名 → 查库 → 过滤自己/拉黑 → 建通知。
-func createMentions(ctx context.Context, ns *service.NotificationService, ur repo.UserRepo, bs *service.BlockService, p events.Payload) {
+func createMentions(ctx context.Context, ns *service.NotificationService, ur repo.UserRepo, bs *service.BlockService, p events.Payload) error {
 	if len(p.MentionNames) == 0 {
-		return
+		return nil
 	}
 	users, err := ur.FindByUsernames(ctx, p.MentionNames)
-	if err != nil || len(users) == 0 {
-		return
+	if err != nil {
+		return err
+	}
+	if len(users) == 0 {
+		return nil
 	}
 	targetID := p.CommentID
 	if targetID == 0 {
@@ -216,10 +213,17 @@ func createMentions(ctx context.Context, ns *service.NotificationService, ur rep
 			continue
 		}
 		if bs != nil {
-			if blocked, err := bs.IsBlockedEitherWay(ctx, p.ActorID, u.ID); err == nil && blocked {
+			blocked, err := bs.IsBlockedEitherWay(ctx, p.ActorID, u.ID)
+			if err != nil {
+				return err
+			}
+			if blocked {
 				continue
 			}
 		}
-		ns.Create(ctx, p.ActorID, u.ID, model.NotifTypeMention, targetID, p.NoteID, "@提到了你")
+		if err := ns.Create(ctx, p.ActorID, u.ID, model.NotifTypeMention, targetID, p.NoteID, "@提到了你", p.EventID); err != nil {
+			return err
+		}
 	}
+	return nil
 }

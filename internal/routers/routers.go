@@ -35,8 +35,8 @@ func SetupRouter(db *gorm.DB, appCfg config.Config) *gin.Engine {
 
 	jwtService := middleware.NewJWT(&appCfg)
 
-	userRepo := repo.NewGormUserRepo(db)
 	outboxRepo := outbox.NewRepo(db)
+	userRepo := repo.NewGormUserRepo(db, outboxRepo)
 
 	notifRepo := repo.NewGormNotificationRepo(db)
 	notifService := service.NewNotificationService(notifRepo, userRepo, redisCache)

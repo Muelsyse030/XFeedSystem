@@ -69,6 +69,16 @@ func LoadConfig() (*Config, error) {
 	viper.BindEnv("oss.access_key_secret")
 	viper.BindEnv("jwt.secret")
 	viper.BindEnv("server.port")
+	viper.BindEnv("mysql.dsn")
+	viper.BindEnv("redis.addr")
+	viper.BindEnv("redis.password")
+	viper.BindEnv("meilisearch.host")
+	viper.BindEnv("meilisearch.api_key")
+	viper.BindEnv("meilisearch.index")
+	viper.BindEnv("streams.key")
+	viper.BindEnv("worker.relay_enabled")
+	viper.BindEnv("worker.batch")
+	viper.BindEnv("worker.poll_interval_ms")
 
 	if err := viper.ReadInConfig(); err != nil {
 		return nil, err
