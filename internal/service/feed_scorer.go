@@ -7,7 +7,7 @@ import (
 )
 
 const (
-	// WeightLike 权重常量，方便调参
+	// 权重常量，方便调参
 	WeightLike        = 3.0
 	WeightFavorite    = 5.0
 	WeightComment     = 4.0

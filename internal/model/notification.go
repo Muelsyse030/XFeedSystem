@@ -24,7 +24,6 @@ type Notification struct {
 	Message      string    `gorm:"size:255;not null"`
 	IsRead       bool      `gorm:"not null;default:false;index:idx_notif_user_read,priority:2"`
 	CreatedAt    time.Time `gorm:"not null;index"`
-	EventID      int64     `gorm:"not null;index"`
 }
 
 func (Notification) TableName() string {

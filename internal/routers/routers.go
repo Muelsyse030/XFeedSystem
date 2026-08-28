@@ -1,18 +1,19 @@
 package routers
 
 import (
-	"XFeedSystem/internal/cache"
-	"XFeedSystem/internal/handler"
-	"XFeedSystem/internal/middleware"
-	"XFeedSystem/internal/outbox"
-	"XFeedSystem/internal/pkg/config"
-	"XFeedSystem/internal/pkg/logger"
-	"XFeedSystem/internal/repo"
-	"XFeedSystem/internal/service"
 	"context"
 	"net/http"
 	"net/http/pprof"
 	"os"
+	"time"
+
+	"XFeedSystem/internal/cache"
+	"XFeedSystem/internal/handler"
+	"XFeedSystem/internal/middleware"
+	"XFeedSystem/internal/pkg/config"
+	"XFeedSystem/internal/pkg/logger"
+	"XFeedSystem/internal/repo"
+	"XFeedSystem/internal/service"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -35,8 +36,7 @@ func SetupRouter(db *gorm.DB, appCfg config.Config) *gin.Engine {
 
 	jwtService := middleware.NewJWT(&appCfg)
 
-	outboxRepo := outbox.NewRepo(db)
-	userRepo := repo.NewGormUserRepo(db, outboxRepo)
+	userRepo := repo.NewGormUserRepo(db)
 
 	notifRepo := repo.NewGormNotificationRepo(db)
 	notifService := service.NewNotificationService(notifRepo, userRepo, redisCache)
@@ -53,18 +53,20 @@ func SetupRouter(db *gorm.DB, appCfg config.Config) *gin.Engine {
 	adminService := service.NewAdminService(adminRepo)
 	adminHandler := handler.NewAdminHandler(adminService)
 
-	userService := service.NewUserService(userRepo, redisCache, blockService, outboxRepo)
+	userService := service.NewUserService(userRepo, redisCache, notifService, blockService)
 	userHandler := handler.NewUserHandler(userService, jwtService, redisCache)
 
 	statsRepo := repo.NewGormStatsRepo(db)
 	statsService := service.NewStatsService(statsRepo, redisCache)
+	statsService.StartFlusher(context.Background())
 
 	feedRepo := repo.NewGormFeedRepo(db)
 	feedService := service.NewFeedService(feedRepo, userRepo, redisCache, searchRepo, blockService, statsService)
+	feedService.StartRescorer(context.Background(), 5*time.Minute)
 	feedHandler := handler.NewFeedHandler(feedService, redisCache)
 
-	noteRepo := repo.NewGormNoteRepo(db, outboxRepo)
-	noteService := service.NewNoteService(noteRepo, redisCache, blockService, topicService, userRepo, outboxRepo)
+	noteRepo := repo.NewGormNoteRepo(db)
+	noteService := service.NewNoteService(noteRepo, redisCache, searchRepo, notifService, blockService, topicService, feedService, userRepo)
 	noteHandler := handler.NewNoteHandler(noteService, userRepo, redisCache, statsService)
 
 	topicHandler := handler.NewTopicHandler(topicService, feedService, redisCache)
@@ -74,7 +76,7 @@ func SetupRouter(db *gorm.DB, appCfg config.Config) *gin.Engine {
 	messageService := service.NewMessageService(repo.NewGormMessageRepo(db), userRepo, blockService)
 	messageHandler := handler.NewMessageHandler(messageService)
 
-	reportService := service.NewReportService(repo.NewGormReportRepo(db), repo.NewGormNoteRepo(db, outboxRepo), userRepo, repo.NewGormMessageRepo(db), repo.NewGormAdminRepo(db))
+	reportService := service.NewReportService(repo.NewGormReportRepo(db), repo.NewGormNoteRepo(db), userRepo, repo.NewGormMessageRepo(db), repo.NewGormAdminRepo(db))
 	reportHandler := handler.NewReportHandler(reportService)
 
 	if err != nil {
