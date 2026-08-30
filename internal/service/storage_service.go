@@ -7,47 +7,50 @@ import (
 	"fmt"
 	"io"
 	"mime/multipart"
+	"net/http"
+	"net/url"
 	"path/filepath"
 	"strings"
 
 	"XFeedSystem/internal/pkg/config"
 	"XFeedSystem/internal/pkg/logger"
 
-	"github.com/aliyun/aliyun-oss-go-sdk/oss"
 	"github.com/google/uuid"
+	"github.com/tencentyun/cos-go-sdk-v5"
 )
 
-var ErrOSSDisabled = errors.New("oss is disabled")
+var ErrCOSDisabled = errors.New("cos is disabled")
 
 type StorageService struct {
 	cfg    config.Config
-	client *oss.Client
-	bucket *oss.Bucket
+	client *cos.Client
 }
 
 func NewStorageService(cfg config.Config) (*StorageService, error) {
-	if !cfg.OSS.Enable {
+	if !cfg.COS.Enable {
 		return &StorageService{cfg: cfg}, nil
 	}
-	if cfg.OSS.Endpoint == "" || cfg.OSS.Bucket == "" || cfg.OSS.AccessKeyID == "" || cfg.OSS.AccessKeySecret == "" {
-		logger.Sugar.Warnf("[WARN] OSS 配置不完整，已自动禁用图片上传功能。请配置 XFEED_OSS_* 环境变量后重启。")
-		cfg.OSS.Enable = false
+	if cfg.COS.Region == "" || cfg.COS.Bucket == "" || cfg.COS.SecretID == "" || cfg.COS.SecretKey == "" {
+		logger.Sugar.Warnf("[WARN] COS 配置不完整，已自动禁用图片上传功能。请配置 XFEED_COS_* 环境变量后重启。")
+		cfg.COS.Enable = false
 		return &StorageService{cfg: cfg}, nil
 	}
-	client, err := oss.New(cfg.OSS.Endpoint, cfg.OSS.AccessKeyID, cfg.OSS.AccessKeySecret)
+	u, err := url.Parse(fmt.Sprintf("https://%s.cos.%s.myqcloud.com", cfg.COS.Bucket, cfg.COS.Region))
 	if err != nil {
 		return nil, err
 	}
-	bucket, err := client.Bucket(cfg.OSS.Bucket)
-	if err != nil {
-		return nil, err
-	}
-	return &StorageService{cfg: cfg, client: client, bucket: bucket}, nil
+	client := cos.NewClient(&cos.BaseURL{BucketURL: u}, &http.Client{
+		Transport: &cos.AuthorizationTransport{
+			SecretID:  cfg.COS.SecretID,
+			SecretKey: cfg.COS.SecretKey,
+		},
+	})
+	return &StorageService{cfg: cfg, client: client}, nil
 }
 
 func (s *StorageService) UploadImage(ctx context.Context, file multipart.File, header *multipart.FileHeader, prefix string) (string, error) {
-	if !s.cfg.OSS.Enable || s.bucket == nil {
-		return "", ErrOSSDisabled
+	if !s.cfg.COS.Enable || s.client == nil {
+		return "", ErrCOSDisabled
 	}
 	defer file.Close()
 	data, err := ioReadAll(file)
@@ -63,14 +66,14 @@ func (s *StorageService) UploadImage(ctx context.Context, file multipart.File, h
 	if contentType == "" {
 		contentType = "application/octet-stream"
 	}
-	if err := s.bucket.PutObject(objectKey, bytes.NewReader(data),
-		oss.ObjectACL(oss.ACLPublicRead),
-		oss.ContentType(contentType),
-	); err != nil {
+	if _, err := s.client.Object.Put(ctx, objectKey, bytes.NewReader(data), &cos.ObjectPutOptions{
+		ObjectPutHeaderOptions: &cos.ObjectPutHeaderOptions{ContentType: contentType},
+		ACLHeaderOptions:       &cos.ACLHeaderOptions{XCosACL: "public-read"},
+	}); err != nil {
 		return "", err
 	}
-	if s.cfg.OSS.BaseURL != "" {
-		return strings.TrimRight(s.cfg.OSS.BaseURL, "/") + "/" + objectKey, nil
+	if s.cfg.COS.BaseURL != "" {
+		return strings.TrimRight(s.cfg.COS.BaseURL, "/") + "/" + objectKey, nil
 	}
 	return objectKey, nil
 }
@@ -80,8 +83,8 @@ func ioReadAll(file multipart.File) ([]byte, error) {
 }
 
 func (s *StorageService) UploadVideo(ctx context.Context, file multipart.File, header *multipart.FileHeader, prefix string) (string, error) {
-	if !s.cfg.OSS.Enable || s.bucket == nil {
-		return "", ErrOSSDisabled
+	if !s.cfg.COS.Enable || s.client == nil {
+		return "", ErrCOSDisabled
 	}
 	defer file.Close()
 	ext := strings.ToLower(filepath.Ext(header.Filename))
@@ -89,11 +92,11 @@ func (s *StorageService) UploadVideo(ctx context.Context, file multipart.File, h
 		ext = ".mp4"
 	}
 	objectKey := fmt.Sprintf("%s/%s%s", strings.Trim(prefix, "/"), uuid.NewString(), ext)
-	if err := s.bucket.PutObject(objectKey, file,
-		oss.ObjectACL(oss.ACLPublicRead),
-		oss.ContentType(header.Header.Get("Content-Type")),
-	); err != nil {
+	if _, err := s.client.Object.Put(ctx, objectKey, file, &cos.ObjectPutOptions{
+		ObjectPutHeaderOptions: &cos.ObjectPutHeaderOptions{ContentType: header.Header.Get("Content-Type")},
+		ACLHeaderOptions:       &cos.ACLHeaderOptions{XCosACL: "public-read"},
+	}); err != nil {
 		return "", err
 	}
-	return strings.TrimRight(s.cfg.OSS.BaseURL, "/") + "/" + objectKey, nil
+	return strings.TrimRight(s.cfg.COS.BaseURL, "/") + "/" + objectKey, nil
 }

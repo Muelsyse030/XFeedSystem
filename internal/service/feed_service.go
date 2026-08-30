@@ -154,14 +154,40 @@ func (s *FeedService) ListTopic(ctx context.Context, topicID int64, cursorStr st
 // 基础分游标会永久跳过"基础分靠前但个性化排后"的笔记（漏内容）。
 // 当前站点规模小（百级笔记），全量取 ZSET 再排序成本极低，换来不重不漏。
 func (s *FeedService) getFeedPage(ctx context.Context, userID int64, cursorScore float64, cursorID int64, limit int) ([]scoredFeedItem, int64, error) {
-	key := cache.FeedEngineKey(0)
-	if err := s.ensureFeedEngine(ctx, key); err != nil {
-		return nil, 0, err
-	}
-
 	start := int64(0)
 	if cursorID == 0 && cursorScore > 0 {
 		start = int64(cursorScore)
+	}
+
+	// 排名缓存命中：直接按位置切片，跳过全量 ZSET / 画像 / 排序 / 多样性
+	// 每用户每 10s 才重建一次，翻页深度 = 池大小（不再被 50 截断）
+	rankKey := cache.FeedUserRankKey(userID)
+	if zs, err := s.cache.ZRangeByScore(ctx, rankKey, "0", "+inf", 0, -1); err == nil && len(zs) > 0 {
+		page := make([]scoredFeedItem, 0, len(zs))
+		for _, z := range zs {
+			member, ok := z.Member.(string)
+			if !ok {
+				continue
+			}
+			id, err := strconv.ParseInt(member, 10, 64)
+			if err != nil {
+				continue
+			}
+			page = append(page, scoredFeedItem{ID: id})
+		}
+		if start >= int64(len(page)) {
+			return []scoredFeedItem{}, start, nil
+		}
+		end := start + int64(limit)
+		if end > int64(len(page)) {
+			end = int64(len(page))
+		}
+		return page[start:end], start, nil
+	}
+
+	key := cache.FeedEngineKey(0)
+	if err := s.ensureFeedEngine(ctx, key); err != nil {
+		return nil, 0, err
 	}
 
 	// 读时个性化参数
@@ -205,8 +231,12 @@ func (s *FeedService) getFeedPage(ctx context.Context, userID int64, cursorScore
 		}
 	}
 
-	// 全量候选：按基础分倒序取全部
-	zs, err := s.cache.ZRevRangeByScore(ctx, key, "+inf", "-inf", 0, -1)
+	// 候选：按基础分倒序只取全局 Top N
+	limitCount := int64(-1)
+	if FeedCandidateLimit > 0 {
+		limitCount = int64(FeedCandidateLimit)
+	}
+	zs, err := s.cache.ZRevRangeByScore(ctx, key, "+inf", "-inf", 0, limitCount)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -261,13 +291,6 @@ func (s *FeedService) getFeedPage(ctx context.Context, userID int64, cursorScore
 		candidates = filtered
 	}
 
-	// Candidate：候选池（当前全量；笔记量级上来后改成截断前 N 个，
-	// 并把分页从"位置偏移"切换成"分数游标"）
-	candidateLimit := FeedCandidateLimit
-	if candidateLimit > 0 && int64(len(candidates)) > int64(candidateLimit) {
-		candidates = candidates[:candidateLimit]
-	}
-
 	// 拉黑过滤：按作者去重后一次性查询（提前过滤，省得多样性阶段浪费位置）
 	blockedAuthors := make(map[int64]bool)
 	if userID > 0 && s.block != nil {
@@ -299,10 +322,20 @@ func (s *FeedService) getFeedPage(ctx context.Context, userID int64, cursorScore
 		return candidates[i].ID > candidates[j].ID
 	})
 
-	// Diversity：MMR 多样性重排（替代"每作者最多 2 条"硬截断；自己的笔记不限量）
+	// Diversity：对全量候选池做多样性重排（O(N log N)，不再截断）
 	params := DefaultDiversityParams()
 	params.SkipLimitAuthorID = userID
 	candidates = diverseRank(candidates, topicIDsByNote, typeByNote, params)
+
+	// 写回每用户排名缓存（score = 排名位置，10s TTL）
+	// Hide / Block / 关注变化会删除该 key，删除笔记由 GetByIDs 的 published 条件兜底
+	if len(candidates) > 0 {
+		scores := make(map[int64]int64, len(candidates))
+		for i, it := range candidates {
+			scores[it.ID] = int64(i)
+		}
+		_ = s.cache.ZAddFeed(ctx, cache.FeedUserRankKey(userID), scores, 10*time.Second)
+	}
 
 	// 位置分页（顺序稳定，不重不漏）
 	if start >= int64(len(candidates)) {

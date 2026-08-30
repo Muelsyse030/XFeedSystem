@@ -111,23 +111,27 @@ func main() {
 func feedHandler(feed *service.FeedService, rc *cache.RedisCache) queue.Handler {
 	return func(ctx context.Context, typ string, p events.Payload) error {
 		switch typ {
-		case events.NoteCreated, events.NoteUpdated,
-			events.NoteLiked, events.NoteUnliked,
-			events.NoteFavorited, events.NoteUnfavorited,
-			events.CommentCreated, events.CommentDeleted:
+		case events.NoteCreated, events.NoteUpdated:
 			if err := feed.UpsertNoteScore(ctx, p.NoteID); err != nil {
 				return err
 			}
+			// 候选集合变化：全局失效，让新笔记尽快出现在所有人首页
+			return rc.InvalidateFeedRawAll(ctx)
 		case events.NoteDeleted:
 			if err := feed.RemoveNoteScore(ctx, p.NoteID); err != nil {
 				return err
 			}
+			return rc.InvalidateFeedRawAll(ctx)
+		case events.NoteLiked, events.NoteUnliked,
+			events.NoteFavorited, events.NoteUnfavorited,
+			events.CommentCreated, events.CommentDeleted:
+			// 互动只更新单条分数；排名缓存 10s TTL 自然收敛，不再全局失效（避免风暴）
+			return feed.UpsertNoteScore(ctx, p.NoteID)
 		case events.UserFollowed, events.UserUnfollowed:
 			return rc.InvalidateFeedRawForUser(ctx, p.ActorID)
 		default:
 			return nil
 		}
-		return rc.InvalidateFeedRawAll(ctx)
 	}
 }
 

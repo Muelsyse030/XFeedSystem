@@ -350,21 +350,15 @@ func (c *RedisCache) InvalidateFeedEngineForUser(ctx context.Context, userID int
 	return c.Delete(ctx, FeedEngineKey(userID))
 }
 
-// 效所有 feed 页字节缓存
+// 失效某个用户的 feed 页字节缓存
 func (c *RedisCache) InvalidateFeedRawAll(ctx context.Context) error {
 	if err := c.DeleteByPattern(ctx, FeedForYouRawPrefix()+"*"); err != nil {
 		return err
 	}
-	return c.DeleteByPattern(ctx, FeedPageRawPrefix()+"*")
-}
-
-// 失效某个用户的 feed 页字节缓存
-func (c *RedisCache) InvalidateFeedRawForUser(ctx context.Context, userID int64) error {
-	u := strconv.FormatInt(userID, 10)
-	if err := c.DeleteByPattern(ctx, FeedForYouRawPrefix()+u+":*"); err != nil {
+	if err := c.DeleteByPattern(ctx, FeedPageRawPrefix()+"*"); err != nil {
 		return err
 	}
-	return c.DeleteByPattern(ctx, FeedPageRawPrefix()+u+":*")
+	return c.DeleteByPattern(ctx, FeedUserRankPrefix()+"*")
 }
 
 func (c *RedisCache) SetNX(ctx context.Context, key, value string, ttl time.Duration) (bool, error) {
@@ -434,4 +428,32 @@ func FeedPageRawPrefix() string {
 
 func TopicFeedRawPrefix() string {
 	return fmt.Sprintf("topic:feed:raw:")
+}
+
+func FeedUserRankKey(userID int64) string {
+	return fmt.Sprintf("feed:user:%d:rank", userID)
+}
+
+func FeedUserRankPrefix() string {
+	return "feed:user:*:rank"
+}
+
+func (c *RedisCache) ZRangeByScore(ctx context.Context, key string, min, max string, offset, count int64) ([]redis.Z, error) {
+	return c.client.ZRangeByScoreWithScores(ctx, key, &redis.ZRangeBy{
+		Min:    min,
+		Max:    max,
+		Offset: offset,
+		Count:  count,
+	}).Result()
+}
+
+func (c *RedisCache) InvalidateFeedRawForUser(ctx context.Context, userID int64) error {
+	u := strconv.FormatInt(userID, 10)
+	if err := c.DeleteByPattern(ctx, FeedForYouRawPrefix()+u+":*"); err != nil {
+		return err
+	}
+	if err := c.DeleteByPattern(ctx, FeedPageRawPrefix()+u+":*"); err != nil {
+		return err
+	}
+	return c.Delete(ctx, FeedUserRankKey(userID))
 }

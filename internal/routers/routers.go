@@ -78,7 +78,7 @@ func SetupRouter(db *gorm.DB, appCfg config.Config) *gin.Engine {
 	reportHandler := handler.NewReportHandler(reportService)
 
 	if err != nil {
-		logger.Sugar.Warnf("warn: init oss storage: %v", err)
+		logger.Sugar.Warnf("warn: init cos storage: %v", err)
 		storageService = &service.StorageService{} // 降级为空服务，避免 nil panic
 	}
 	uploadHandler := handler.NewUploadHandler(storageService)

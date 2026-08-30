@@ -25,14 +25,14 @@ type Config struct {
 		Secret         string `mapstructure:"secret"`
 		ExpireDuration int    `mapstructure:"expire_hours"`
 	} `mapstructure:"jwt"`
-	OSS struct {
-		Enable          bool   `mapstructure:"enable"`
-		Endpoint        string `mapstructure:"endpoint"`
-		Bucket          string `mapstructure:"bucket"`
-		AccessKeyID     string `mapstructure:"access_key_id"`
-		AccessKeySecret string `mapstructure:"access_key_secret"`
-		BaseURL         string `mapstructure:"base_url"`
-	} `mapstructure:"oss"`
+	COS struct {
+		Enable    bool   `mapstructure:"enable"`
+		Region    string `mapstructure:"region"`
+		Bucket    string `mapstructure:"bucket"`
+		SecretID  string `mapstructure:"secret_id"`
+		SecretKey string `mapstructure:"secret_key"`
+		BaseURL   string `mapstructure:"base_url"`
+	} `mapstructure:"cos"`
 	Meilisearch struct {
 		Host   string `mapstructure:"host"`
 		APIKey string `mapstructure:"api_key"`
@@ -65,8 +65,12 @@ func LoadConfig() (*Config, error) {
 	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	viper.AutomaticEnv()
 
-	viper.BindEnv("oss.access_key_id")
-	viper.BindEnv("oss.access_key_secret")
+	viper.BindEnv("cos.enable")
+	viper.BindEnv("cos.region")
+	viper.BindEnv("cos.bucket")
+	viper.BindEnv("cos.secret_id")
+	viper.BindEnv("cos.secret_key")
+	viper.BindEnv("cos.base_url")
 	viper.BindEnv("jwt.secret")
 	viper.BindEnv("server.port")
 	viper.BindEnv("mysql.dsn")
@@ -84,13 +88,13 @@ func LoadConfig() (*Config, error) {
 		return nil, err
 	}
 
-	// 从 .env 文件只读取 OSS 密钥（不影响其他任何配置）
+	// 从 .env 文件只读取 COS 密钥（不影响其他任何配置）
 	envMap := loadEnvFile(configPath)
-	if ak, ok := envMap["XFEED_OSS_ACCESS_KEY_ID"]; ok && ak != "" {
-		viper.Set("oss.access_key_id", ak)
+	if ak, ok := envMap["XFEED_COS_SECRET_ID"]; ok && ak != "" {
+		viper.Set("cos.secret_id", ak)
 	}
-	if sk, ok := envMap["XFEED_OSS_ACCESS_KEY_SECRET"]; ok && sk != "" {
-		viper.Set("oss.access_key_secret", sk)
+	if sk, ok := envMap["XFEED_COS_SECRET_KEY"]; ok && sk != "" {
+		viper.Set("cos.secret_key", sk)
 	}
 
 	var config Config
