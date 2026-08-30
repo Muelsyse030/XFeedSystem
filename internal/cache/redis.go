@@ -358,6 +358,9 @@ func (c *RedisCache) InvalidateFeedRawAll(ctx context.Context) error {
 	if err := c.DeleteByPattern(ctx, FeedPageRawPrefix()+"*"); err != nil {
 		return err
 	}
+	if err := c.DeleteByPattern(ctx, "feed:user:*:rank"); err != nil {
+		return err
+	}
 	return c.DeleteByPattern(ctx, FeedUserRankPrefix()+"*")
 }
 
@@ -387,6 +390,11 @@ func (c *RedisCache) ZRangeByScore(ctx context.Context, key string, min, max str
 		Offset: offset,
 		Count:  count,
 	}).Result()
+}
+
+// ZCard 返回有序集合成员数（打分 ZSET 对账用）
+func (c *RedisCache) ZCard(ctx context.Context, key string) (int64, error) {
+	return c.client.ZCard(ctx, key).Result()
 }
 
 func (c *RedisCache) InvalidateFeedRawForUser(ctx context.Context, userID int64) error {
@@ -478,4 +486,8 @@ func UserHiddenKey(userID int64) string {
 
 func UserHideCountKey(userID int64) string {
 	return fmt.Sprintf("user:%d:hide_count", userID)
+}
+
+func FeedNoteKey(noteID int64) string {
+	return fmt.Sprintf("feed:note:%d", noteID)
 }

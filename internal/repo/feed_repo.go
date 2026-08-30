@@ -136,6 +136,16 @@ func (r *GormFeedRepo) ListAllPublished(ctx context.Context) ([]*model.Note, err
 	return notes, err
 }
 
+// CountPublished 已发布笔记总数（打分 ZSET 对账用）
+func (r *GormFeedRepo) CountPublished(ctx context.Context) (int64, error) {
+	var n int64
+	err := r.db.WithContext(ctx).
+		Model(&model.Note{}).
+		Where("status = ?", model.NoteStatusPublished).
+		Count(&n).Error
+	return n, err
+}
+
 // ListByTopic 话题页 feed（时间倒序键集分页）
 func (r *GormFeedRepo) ListByTopic(ctx context.Context, topicID int64, cursor *model.FeedCursor, limit int) ([]*model.Note, error) {
 	if limit <= 0 || limit > 50 {

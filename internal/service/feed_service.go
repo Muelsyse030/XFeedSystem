@@ -4,6 +4,7 @@ import (
 	"XFeedSystem/internal/cache"
 	"XFeedSystem/internal/model"
 	"XFeedSystem/internal/pkg/cursor"
+	"XFeedSystem/internal/pkg/logger"
 	"XFeedSystem/internal/repo"
 	"context"
 	"encoding/json"
@@ -95,10 +96,7 @@ func (s *FeedService) ListForYou(ctx context.Context, cursorStr string, limit in
 	for i, it := range page {
 		ids[i] = it.ID
 	}
-	notes, err := s.repo.GetByIDs(ctx, ids)
-	if err != nil {
-		return nil, err
-	}
+	notes := s.getNotesByIDs(ctx, ids)
 	byID := make(map[int64]*model.Note, len(notes))
 	for _, n := range notes {
 		byID[n.ID] = n
@@ -681,10 +679,41 @@ func (s *FeedService) StartRescorer(ctx context.Context, interval time.Duration)
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
+				_ = s.ReconcileFeedEngine(ctx)
 				_ = s.RescoreRecentNotes(ctx)
 			}
 		}
 	}()
+}
+
+// ReconcileFeedEngine 对账打分 ZSET 与 DB 已发布笔记数：
+// 明显不一致（说明 Redis 有脏成员或漏数据）时删除并懒重建。
+func (s *FeedService) ReconcileFeedEngine(ctx context.Context) error {
+	if s.cache == nil {
+		return nil
+	}
+	key := cache.FeedEngineKey(0)
+	zsN, err := s.cache.ZCard(ctx, key)
+	if err != nil {
+		return err
+	}
+	dbN, err := s.repo.CountPublished(ctx)
+	if err != nil {
+		return err
+	}
+	if dbN == 0 {
+		return nil
+	}
+	diff := zsN - dbN
+	if diff < 0 {
+		diff = -diff
+	}
+	if diff > 50 && diff > dbN/10 {
+		logger.Sugar.Warnf("feed engine mismatch zset=%d db=%d, rebuild", zsN, dbN)
+		_ = s.cache.Delete(ctx, key)
+		return s.ensureFeedEngine(ctx, key)
+	}
+	return nil
 }
 
 func (s *FeedService) Hide(ctx context.Context, userID int64, noteID int64) error {
@@ -785,4 +814,51 @@ func (s *FeedService) getHiddenData(ctx context.Context, userID int64) (map[int6
 		}
 	}
 	return hiddenSet, hideCounts
+}
+
+func (s *FeedService) getNotesByIDs(ctx context.Context, ids []int64) []*model.Note {
+	if len(ids) == 0 {
+		return nil
+	}
+	result := make([]*model.Note, 0, len(ids))
+	missIDs := make([]int64, 0, len(ids))
+	if s.cache != nil {
+		keys := make([]string, len(ids))
+		for i, id := range ids {
+			keys[i] = cache.FeedNoteKey(id)
+		}
+		vals, err := s.cache.MGet(ctx, keys...)
+		if err == nil {
+			for i, val := range vals {
+				if val == "" {
+					missIDs = append(missIDs, ids[i])
+					continue
+				}
+				var n model.Note
+				if json.Unmarshal([]byte(val), &n) == nil {
+					result = append(result, &n)
+				} else {
+					missIDs = append(missIDs, ids[i])
+				}
+			}
+		} else {
+			missIDs = ids
+		}
+	} else {
+		missIDs = ids
+	}
+	if len(missIDs) > 0 {
+		dbNotes, err := s.repo.GetByIDs(ctx, missIDs)
+		if err != nil {
+			logger.Sugar.Errorf("getNotesByIDs db err: %v", err)
+		} else {
+			for _, n := range dbNotes {
+				result = append(result, n)
+				if s.cache != nil {
+					_ = s.cache.SetJSON(ctx, cache.FeedNoteKey(n.ID), n, 10*time.Minute)
+				}
+			}
+		}
+	}
+	return result
 }

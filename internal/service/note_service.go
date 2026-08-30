@@ -83,7 +83,7 @@ func NewNoteService(r repo.NoteRepo, c *cache.RedisCache,
 // 只删精确的笔记 JSON + 详情字节缓存；打分 ZSET / feed 页缓存由 Feed Worker 消费事件处理。
 func (s *NoteService) invalidateNoteFeed(ctx context.Context, noteID int64) {
 	if s.cache != nil {
-		_ = s.cache.Delete(ctx, cache.NoteKey(noteID), cache.NoteDetailRawKey(noteID))
+		_ = s.cache.Delete(ctx, cache.NoteKey(noteID), cache.NoteDetailRawKey(noteID), cache.FeedNoteKey(noteID))
 	}
 }
 

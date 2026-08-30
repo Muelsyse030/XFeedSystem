@@ -16,11 +16,17 @@ import (
 	"errors"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
+)
+
+var (
+	feedDebounceMu sync.Mutex
+	feedDebounce   = map[int64]*time.Timer{}
 )
 
 func main() {
@@ -125,8 +131,9 @@ func feedHandler(feed *service.FeedService, rc *cache.RedisCache) queue.Handler 
 		case events.NoteLiked, events.NoteUnliked,
 			events.NoteFavorited, events.NoteUnfavorited,
 			events.CommentCreated, events.CommentDeleted:
-			// 互动只更新单条分数；排名缓存 10s TTL 自然收敛，不再全局失效（避免风暴）
-			return feed.UpsertNoteScore(ctx, p.NoteID)
+			// 互动只更新单条分数（2s 去抖合并）；排名缓存 10s TTL 自然收敛，不全局失效
+			debounceUpsert(feed, ctx, p.NoteID)
+			return nil
 		case events.UserFollowed, events.UserUnfollowed:
 			return rc.InvalidateFeedRawForUser(ctx, p.ActorID)
 		default:
@@ -237,4 +244,20 @@ func createMentions(ctx context.Context, ns *service.NotificationService, ur rep
 		}
 	}
 	return nil
+}
+
+func debounceUpsert(feed *service.FeedService, ctx context.Context, noteID int64) {
+	feedDebounceMu.Lock()
+	if t, ok := feedDebounce[noteID]; ok {
+		t.Reset(2 * time.Second)
+		feedDebounceMu.Unlock()
+		return
+	}
+	feedDebounce[noteID] = time.AfterFunc(2*time.Second, func() {
+		feedDebounceMu.Lock()
+		delete(feedDebounce, noteID)
+		feedDebounceMu.Unlock()
+		_ = feed.UpsertNoteScore(ctx, noteID)
+	})
+	feedDebounceMu.Unlock()
 }
