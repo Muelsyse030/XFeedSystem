@@ -4,7 +4,6 @@ import (
 	"XFeedSystem/internal/cache"
 	"XFeedSystem/internal/model"
 	"XFeedSystem/internal/pkg/cursor"
-	"XFeedSystem/internal/pkg/logger"
 	"XFeedSystem/internal/repo"
 	"context"
 	"encoding/json"
@@ -194,6 +193,7 @@ func (s *FeedService) getFeedPage(ctx context.Context, userID int64, cursorScore
 	var followingSet map[int64]bool
 	var typePref map[int8]float64
 	hiddenSet := map[int64]struct{}{}
+	hideCounts := map[int8]int64{}
 	followedTopics := map[int64]bool{}
 	if userID > 0 {
 		if ids, err := s.getFollowingIDs(ctx, userID); err == nil {
@@ -202,23 +202,13 @@ func (s *FeedService) getFeedPage(ctx context.Context, userID int64, cursorScore
 				followingSet[id] = true
 			}
 		}
-		if ids, err := s.repo.GetFollowedTopicIDs(ctx, userID); err == nil {
-			for _, id := range ids {
-				followedTopics[id] = true
-			}
+
+		for _, id := range s.getFollowedTopicIDs(ctx, userID) {
+			followedTopics[id] = true
 		}
-		typePref, _ = s.repo.GetUserTypePreference(ctx, userID)
-		hiddenIDs, err := s.repo.GetHiddenNoteIDs(ctx, userID)
-		if err != nil {
-			logger.Sugar.Warnf("get hidden note ids err: %v", err)
-		}
-		for _, id := range hiddenIDs {
-			hiddenSet[id] = struct{}{}
-		}
-		hideCounts, err := s.repo.CountHidesByType(ctx, userID)
-		if err != nil {
-			logger.Sugar.Warnf("count hides by type err: %v", err)
-		}
+
+		typePref = s.getTypePref(ctx, userID)
+		hiddenSet, hideCounts = s.getHiddenData(ctx, userID)
 		for t, c := range hideCounts {
 			if typePref == nil {
 				typePref = map[int8]float64{}
@@ -292,26 +282,25 @@ func (s *FeedService) getFeedPage(ctx context.Context, userID int64, cursorScore
 	}
 
 	// 拉黑过滤：按作者去重后一次性查询（提前过滤，省得多样性阶段浪费位置）
-	blockedAuthors := make(map[int64]bool)
+	var blockedAuthors map[int64]bool
 	if userID > 0 && s.block != nil {
 		authorSet := make(map[int64]struct{}, len(candidates))
 		for _, it := range candidates {
+			if it.AuthorID == 0 {
+				continue
+			}
 			authorSet[it.AuthorID] = struct{}{}
 		}
+		authorIDs := make([]int64, 0, len(authorSet))
 		for aid := range authorSet {
-			if blocked, err := s.block.IsBlockedEitherWay(ctx, userID, aid); err == nil && blocked {
-				blockedAuthors[aid] = true
+			authorIDs = append(authorIDs, aid)
+		}
+		if blocked, err := s.block.FilterBlockedAuthors(ctx, userID, authorIDs); err == nil && len(blocked) > 0 {
+			blockedAuthors = make(map[int64]bool, len(blocked))
+			for _, id := range blocked {
+				blockedAuthors[id] = true
 			}
 		}
-	}
-	if len(blockedAuthors) > 0 {
-		filtered := candidates[:0]
-		for _, it := range candidates {
-			if !blockedAuthors[it.AuthorID] {
-				filtered = append(filtered, it)
-			}
-		}
-		candidates = filtered
 	}
 
 	// Rank：读时个性化排序（分数降序，同分 id 降序）
@@ -493,6 +482,24 @@ func (s *FeedService) getFollowingIDs(ctx context.Context, userID int64) ([]int6
 		_ = s.cache.Expire(ctx, key, 30*time.Minute)
 	}
 	return ids, nil
+}
+
+func (s *FeedService) getFollowedTopicIDs(ctx context.Context, userID int64) []int64 {
+	key := cache.FollowedTopicsKey(userID)
+	if s.cache != nil {
+		if ids, err := s.cache.SMembers(ctx, key); err == nil {
+			return ids
+		}
+	}
+	ids, err := s.repo.GetFollowedTopicIDs(ctx, userID)
+	if err != nil {
+		return nil
+	}
+	if s.cache != nil && len(ids) > 0 {
+		_ = s.cache.SAdd(ctx, key, ids...)
+		_ = s.cache.Expire(ctx, key, 30*time.Minute)
+	}
+	return ids
 }
 
 func (s *FeedService) batchGetUsers(ctx context.Context, ids []int64) []*model.User {
@@ -691,6 +698,13 @@ func (s *FeedService) Hide(ctx context.Context, userID int64, noteID int64) erro
 	if err := s.repo.AddFeedHide(ctx, userID, noteID, notes[0].Type); err != nil {
 		return err
 	}
+	if s.cache != nil {
+		_ = s.cache.SAdd(ctx, cache.UserHiddenKey(userID), noteID)
+		_ = s.cache.Expire(ctx, cache.UserHiddenKey(userID), 30*time.Minute)
+		_ = s.cache.HIncrBy(ctx, cache.UserHideCountKey(userID),
+			strconv.FormatInt(int64(notes[0].Type), 10), 1)
+		_ = s.cache.Expire(ctx, cache.UserHideCountKey(userID), 30*time.Minute)
+	}
 	return s.cache.InvalidateFeedRawForUser(ctx, userID)
 }
 
@@ -698,5 +712,77 @@ func (s *FeedService) UndoHide(ctx context.Context, userID int64, noteID int64) 
 	if err := s.repo.RemoveFeedHide(ctx, userID, noteID); err != nil {
 		return err
 	}
+	if s.cache != nil {
+		_ = s.cache.SRem(ctx, cache.UserHiddenKey(userID), noteID)
+		_ = s.cache.Delete(ctx, cache.UserHideCountKey(userID))
+	}
 	return s.cache.InvalidateFeedRawForUser(ctx, userID)
+}
+
+func (s *FeedService) getTypePref(ctx context.Context, userID int64) map[int8]float64 {
+	key := cache.UserTypePrefKey(userID)
+	if s.cache != nil {
+		var pref map[int8]float64
+		if err := s.cache.GetJSON(ctx, key, &pref); err == nil {
+			return pref
+		}
+	}
+	pref, err := s.repo.GetUserTypePreference(ctx, userID)
+	if err != nil || len(pref) == 0 {
+		return nil
+	}
+	if s.cache != nil {
+		_ = s.cache.SetJSON(ctx, key, pref, 5*time.Minute)
+	}
+	return pref
+}
+
+// getHiddenData 隐藏笔记 ID 集合 + 分类型计数：优先 Redis，miss 回源并回填
+func (s *FeedService) getHiddenData(ctx context.Context, userID int64) (map[int64]struct{}, map[int8]int64) {
+	hiddenSet := map[int64]struct{}{}
+	hideCounts := map[int8]int64{}
+	if s.cache == nil {
+		ids, _ := s.repo.GetHiddenNoteIDs(ctx, userID)
+		for _, id := range ids {
+			hiddenSet[id] = struct{}{}
+		}
+		hideCounts, _ = s.repo.CountHidesByType(ctx, userID)
+		return hiddenSet, hideCounts
+	}
+
+	// 隐藏笔记集合
+	ids, err := s.cache.SMembers(ctx, cache.UserHiddenKey(userID))
+	if err != nil {
+		ids, _ = s.repo.GetHiddenNoteIDs(ctx, userID)
+		if len(ids) > 0 {
+			_ = s.cache.SAdd(ctx, cache.UserHiddenKey(userID), ids...)
+			_ = s.cache.Expire(ctx, cache.UserHiddenKey(userID), 30*time.Minute)
+		}
+	}
+	for _, id := range ids {
+		hiddenSet[id] = struct{}{}
+	}
+
+	// 分类型计数（Hash: type -> count）
+	raw, err := s.cache.HGetAll(ctx, cache.UserHideCountKey(userID))
+	if err != nil || len(raw) == 0 {
+		counts, _ := s.repo.CountHidesByType(ctx, userID)
+		for t, c := range counts {
+			hideCounts[t] = c
+			_ = s.cache.HIncrBy(ctx, cache.UserHideCountKey(userID),
+				strconv.FormatInt(int64(t), 10), c)
+		}
+		if len(counts) > 0 {
+			_ = s.cache.Expire(ctx, cache.UserHideCountKey(userID), 30*time.Minute)
+		}
+	} else {
+		for t, c := range raw {
+			tv, err1 := strconv.ParseInt(t, 10, 64)
+			n, err2 := strconv.ParseInt(c, 10, 64)
+			if err1 == nil && err2 == nil {
+				hideCounts[int8(tv)] = n
+			}
+		}
+	}
+	return hiddenSet, hideCounts
 }

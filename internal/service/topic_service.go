@@ -16,6 +16,7 @@ const (
 	topicMaxPerNote = 5
 	topicNameMaxLen = 32
 )
+
 var ErrTopicNotFound = errors.New("topic not found")
 
 var topicRe = regexp.MustCompile(`#([\p{L}\p{N}_]{1,32})`)

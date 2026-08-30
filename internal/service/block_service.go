@@ -34,7 +34,7 @@ func (s *BlockService) Block(ctx context.Context, userID, blockedID int64) error
 	// 拉黑时自动双向取消关注
 	_ = s.userRepo.Delete(ctx, userID, blockedID)
 	_ = s.userRepo.Delete(ctx, blockedID, userID)
-		if s.cache != nil {
+	if s.cache != nil {
 		_ = s.cache.SRem(ctx, cache.FollowingIDsKey(userID), blockedID)
 		_ = s.cache.SRem(ctx, cache.FollowingIDsKey(blockedID), userID)
 		_ = s.cache.SAdd(ctx, cache.BlockedIDsKey(userID), blockedID)
@@ -85,4 +85,8 @@ func (s *BlockService) GetBlockedIDs(ctx context.Context, userID int64) ([]int64
 
 func (s *BlockService) IsBlockedEitherWay(ctx context.Context, a, b int64) (bool, error) {
 	return s.repo.IsBlockedEitherWay(ctx, a, b)
+}
+
+func (s *BlockService) FilterBlockedAuthors(ctx context.Context, userID int64, authorIDs []int64) ([]int64, error) {
+	return s.repo.FilterBlockedAuthors(ctx, userID, authorIDs)
 }

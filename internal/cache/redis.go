@@ -370,6 +370,36 @@ func (c *RedisCache) InvalidateTopicFeedRaw(ctx context.Context) error {
 	return c.DeleteByPattern(ctx, TopicFeedRawPrefix()+"*")
 }
 
+func (c *RedisCache) HIncrBy(ctx context.Context, key, field string, incr int64) error {
+	return c.client.HIncrBy(ctx, key, field, incr).Err()
+}
+
+// HGetAll 读取哈希全部字段
+func (c *RedisCache) HGetAll(ctx context.Context, key string) (map[string]string, error) {
+	return c.client.HGetAll(ctx, key).Result()
+}
+
+// ZRangeByScore 按分数升序取区间（排名缓存用）
+func (c *RedisCache) ZRangeByScore(ctx context.Context, key string, min, max string, offset, count int64) ([]redis.Z, error) {
+	return c.client.ZRangeByScoreWithScores(ctx, key, &redis.ZRangeBy{
+		Min:    min,
+		Max:    max,
+		Offset: offset,
+		Count:  count,
+	}).Result()
+}
+
+func (c *RedisCache) InvalidateFeedRawForUser(ctx context.Context, userID int64) error {
+	u := strconv.FormatInt(userID, 10)
+	if err := c.DeleteByPattern(ctx, FeedForYouRawPrefix()+u+":*"); err != nil {
+		return err
+	}
+	if err := c.DeleteByPattern(ctx, FeedPageRawPrefix()+u+":*"); err != nil {
+		return err
+	}
+	return c.Delete(ctx, FeedUserRankKey(userID))
+}
+
 func BlockedIDsKey(userID int64) string {
 	return fmt.Sprintf("block:blocked:%d", userID)
 }
@@ -438,22 +468,14 @@ func FeedUserRankPrefix() string {
 	return "feed:user:*:rank"
 }
 
-func (c *RedisCache) ZRangeByScore(ctx context.Context, key string, min, max string, offset, count int64) ([]redis.Z, error) {
-	return c.client.ZRangeByScoreWithScores(ctx, key, &redis.ZRangeBy{
-		Min:    min,
-		Max:    max,
-		Offset: offset,
-		Count:  count,
-	}).Result()
+func FollowedTopicsKey(userID int64) string {
+	return fmt.Sprintf("user:%d:topics", userID)
 }
 
-func (c *RedisCache) InvalidateFeedRawForUser(ctx context.Context, userID int64) error {
-	u := strconv.FormatInt(userID, 10)
-	if err := c.DeleteByPattern(ctx, FeedForYouRawPrefix()+u+":*"); err != nil {
-		return err
-	}
-	if err := c.DeleteByPattern(ctx, FeedPageRawPrefix()+u+":*"); err != nil {
-		return err
-	}
-	return c.Delete(ctx, FeedUserRankKey(userID))
+func UserHiddenKey(userID int64) string {
+	return fmt.Sprintf("user:%d:hidden", userID)
+}
+
+func UserHideCountKey(userID int64) string {
+	return fmt.Sprintf("user:%d:hide_count", userID)
 }
