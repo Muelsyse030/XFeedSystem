@@ -3,6 +3,7 @@ package repo
 import (
 	"XFeedSystem/internal/model"
 	"context"
+	"fmt"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -14,6 +15,8 @@ type NotificationRepo interface {
 	MarkRead(ctx context.Context, id int64, userID int64) error
 	MarkAllRead(ctx context.Context, userID int64) error
 	CountUnread(ctx context.Context, userID int64) (int64, error)
+	ExistsPairs(ctx context.Context, notifs []*model.Notification) (map[string]bool, error)
+	BulkCreate(ctx context.Context, notifs []*model.Notification) (int64, error)
 }
 
 type GormNotificationRepo struct {
@@ -68,4 +71,40 @@ func (r *GormNotificationRepo) CountUnread(ctx context.Context, userID int64) (i
 		Where("user_id = ? AND is_read = ?", userID, false).
 		Count(&count).Error
 	return count, err
+}
+
+func (r *GormNotificationRepo) ExistsPairs(ctx context.Context, notifs []*model.Notification) (map[string]bool, error) {
+	out := map[string]bool{}
+	if len(notifs) == 0 {
+		return out, nil
+	}
+	eventIDs := make([]int64, 0, len(notifs))
+	userIDs := make([]int64, 0, len(notifs))
+	for _, n := range notifs {
+		eventIDs = append(eventIDs, n.EventID)
+		userIDs = append(userIDs, n.UserID)
+	}
+	var rows []struct {
+		EventID int64
+		UserID  int64
+	}
+	if err := r.db.WithContext(ctx).Model(&model.Notification{}).
+		Where("event_id IN ? AND user_id IN ?", eventIDs, userIDs).
+		Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		out[fmt.Sprintf("%d:%d", row.EventID, row.UserID)] = true
+	}
+	return out, nil
+}
+
+func (r *GormNotificationRepo) BulkCreate(ctx context.Context, notifs []*model.Notification) (int64, error) {
+	if len(notifs) == 0 {
+		return 0, nil
+	}
+	res := r.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "event_id"}, {Name: "user_id"}}, DoNothing: true,
+	}).Create(&notifs)
+	return res.RowsAffected, res.Error
 }

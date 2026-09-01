@@ -6,6 +6,7 @@ import (
 	"XFeedSystem/internal/pkg/logger"
 	"XFeedSystem/internal/repo"
 	"context"
+	"fmt"
 	"strconv"
 	"time"
 )
@@ -147,4 +148,45 @@ func (s *NotificationService) UnreadCount(ctx context.Context, userID int64) (in
 		_ = s.cache.Set(ctx, cache.NotifUnreadKey(userID), strconv.FormatInt(count, 10), 5*time.Minute)
 	}
 	return count, nil
+}
+
+func (s *NotificationService) BatchCreate(ctx context.Context, notifs []*model.Notification) error {
+	if len(notifs) == 0 {
+		return nil
+	}
+	// 1) 预查已存在 (event_id, user_id)
+	existing, err := s.repo.ExistsPairs(ctx, notifs)
+	if err != nil {
+		logger.Sugar.Errorf("notify exists pairs err: %v", err)
+		return err
+	}
+	// 2) 过滤 + 每用户新增计数
+	newRows := make([]*model.Notification, 0, len(notifs))
+	unread := map[int64]int64{}
+	for _, n := range notifs {
+		if existing[fmt.Sprintf("%d:%d", n.EventID, n.UserID)] {
+			continue
+		}
+		newRows = append(newRows, n)
+		unread[n.UserID]++
+	}
+	if len(newRows) == 0 {
+		return nil
+	}
+	// 3) 批量 INSERT
+	if _, err := s.repo.BulkCreate(ctx, newRows); err != nil {
+		logger.Sugar.Errorf("notify bulk create err: %v", err)
+		return err
+	}
+	// 4) 未读数 Redis Pipeline
+	if s.cache != nil && len(unread) > 0 {
+		keys := make([]string, 0, len(unread))
+		vals := make([]int64, 0, len(unread))
+		for uid, c := range unread {
+			keys = append(keys, cache.NotifUnreadKey(uid))
+			vals = append(vals, c)
+		}
+		_ = s.cache.IncrByMany(ctx, keys, vals)
+	}
+	return nil
 }

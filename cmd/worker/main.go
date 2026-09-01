@@ -79,8 +79,8 @@ func main() {
 		relay := outbox.NewRelay(
 			outbox.NewRepo(db),
 			queue.NewStream(streamClient),
-			cfg.Worker.Batch,
-			time.Duration(cfg.Worker.PollIntervalMs)*time.Millisecond,
+			cfg.Event.Relay.BatchSize,
+			time.Duration(cfg.Event.Relay.IntervalMs)*time.Millisecond,
 		)
 		go func() {
 			if err := relay.Run(ctx); err != nil {
@@ -112,7 +112,7 @@ func main() {
 
 	start(events.GroupFeed, feedHandler(feedService, redisCache))
 	start(events.GroupSearch, searchHandler(searchRepo, noteRepo))
-	start(events.GroupNotify, notifyHandler(notifService, userRepo, blockService))
+	startBatch(events.GroupNotify, notifyBatchHandler(notifService, userRepo, blockService))
 	startEventMonitor(ctx, db, queue.NewStream(streamClient), 10*time.Second)
 	startBatch(events.GroupCounter, counterBatchHandler(redisCache))
 
@@ -194,76 +194,6 @@ func searchHandler(sr *repo.SearchRepo, nr *repo.GormNoteRepo) queue.Handler {
 			return nil
 		}
 	}
-}
-
-// notifyHandler 创建站内通知并维护未读数。
-// at-least-once 语义下同一事件可能被投递两次，所以先用 event_id 去重：
-// SET NX 成功说明第一次见，失败说明之前已处理过。
-func notifyHandler(ns *service.NotificationService, ur repo.UserRepo, bs *service.BlockService) queue.Handler {
-	return func(ctx context.Context, typ string, p events.Payload) error {
-		switch typ {
-		case events.NoteLiked:
-			return ns.Create(ctx, p.ActorID, p.AuthorID, model.NotifTypeLike, p.NoteID, p.NoteID, "赞了你的笔记", p.EventID)
-		case events.NoteFavorited:
-			return ns.Create(ctx, p.ActorID, p.AuthorID, model.NotifTypeFavorite, p.NoteID, p.NoteID, "收藏了你的笔记", p.EventID)
-		case events.CommentCreated:
-			if p.ParentID == 0 {
-				if err := ns.Create(ctx, p.ActorID, p.AuthorID, model.NotifTypeComment, p.CommentID, p.NoteID, "评论了你的笔记", p.EventID); err != nil {
-					return err
-				}
-			} else {
-				if err := ns.Create(ctx, p.ActorID, p.ReplyToUserID, model.NotifTypeReplyComment, p.CommentID, p.NoteID, "回复了你的评论", p.EventID); err != nil {
-					return err
-				}
-				if p.ReplyToUserID != p.AuthorID {
-					if err := ns.Create(ctx, p.ActorID, p.AuthorID, model.NotifTypeComment, p.CommentID, p.NoteID, "评论了你的笔记", p.EventID); err != nil {
-						return err
-					}
-				}
-			}
-			return createMentions(ctx, ns, ur, bs, p)
-		case events.UserFollowed:
-			return ns.Create(ctx, p.ActorID, p.AuthorID, model.NotifTypeFollow, p.ActorID, 0, "关注了你", p.EventID)
-		}
-		return nil
-	}
-}
-
-// createMentions 复刻原 NoteService.notifyMentions 的逻辑：
-// 用户名 → 查库 → 过滤自己/拉黑 → 建通知。
-func createMentions(ctx context.Context, ns *service.NotificationService, ur repo.UserRepo, bs *service.BlockService, p events.Payload) error {
-	if len(p.MentionNames) == 0 {
-		return nil
-	}
-	users, err := ur.FindByUsernames(ctx, p.MentionNames)
-	if err != nil {
-		return err
-	}
-	if len(users) == 0 {
-		return nil
-	}
-	targetID := p.CommentID
-	if targetID == 0 {
-		targetID = p.NoteID
-	}
-	for _, u := range users {
-		if u.ID == p.ActorID {
-			continue
-		}
-		if bs != nil {
-			blocked, err := bs.IsBlockedEitherWay(ctx, p.ActorID, u.ID)
-			if err != nil {
-				return err
-			}
-			if blocked {
-				continue
-			}
-		}
-		if err := ns.Create(ctx, p.ActorID, u.ID, model.NotifTypeMention, targetID, p.NoteID, "@提到了你", p.EventID); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func StartCounterFlusher(ctx context.Context, rc *cache.RedisCache, noteRepo *repo.GormNoteRepo, feed *service.FeedService, interval time.Duration, batch int) {
@@ -446,11 +376,99 @@ func startEventMonitor(ctx context.Context, db *gorm.DB, stream *queue.Stream, i
 				var pending int64
 				_ = db.Raw("SELECT COUNT(*) FROM outbox_events WHERE status = 0").Scan(&pending).Error
 				streamLen, _ := stream.Len(ctx)
+				feedP, _ := stream.Pending(ctx, events.GroupFeed)
+				searchP, _ := stream.Pending(ctx, events.GroupSearch)
+				notifyP, _ := stream.Pending(ctx, events.GroupNotify)
+				counterP, _ := stream.Pending(ctx, events.GroupCounter)
 				logger.Sugar.Infow("event backlog",
 					"outbox_pending", pending,
 					"stream_len", streamLen,
+					"pending_feed", feedP,
+					"pending_search", searchP,
+					"pending_notify", notifyP,
+					"pending_counter", counterP,
 				)
 			}
 		}
 	}()
+}
+
+func addNotif(rows []*model.Notification, actorID, userID int64, typ int8, targetID, targetNoteID int64, message string, eventID int64) []*model.Notification {
+	if actorID == userID || userID <= 0 {
+		return rows
+	}
+	return append(rows, &model.Notification{
+		UserID: userID, ActorID: actorID, Type: typ,
+		TargetID: targetID, TargetNoteID: targetNoteID,
+		Message: message, EventID: eventID,
+	})
+}
+
+func containsName(names []string, name string) bool {
+	for _, n := range names {
+		if n == name {
+			return true
+		}
+	}
+	return false
+}
+
+func notifyBatchHandler(ns *service.NotificationService, ur repo.UserRepo, bs *service.BlockService) queue.BatchHandler {
+	return func(ctx context.Context, msgs []queue.BatchMessage) error {
+		rows := make([]*model.Notification, 0, len(msgs)*2)
+		mentionNames := map[string]struct{}{}
+		for _, m := range msgs {
+			p := m.Payload
+			switch m.Type {
+			case events.NoteLiked:
+				rows = addNotif(rows, p.ActorID, p.AuthorID, model.NotifTypeLike, p.NoteID, p.NoteID, "赞了你的笔记", p.EventID)
+			case events.NoteFavorited:
+				rows = addNotif(rows, p.ActorID, p.AuthorID, model.NotifTypeFavorite, p.NoteID, p.NoteID, "收藏了你的笔记", p.EventID)
+			case events.CommentCreated:
+				if p.ParentID == 0 {
+					rows = addNotif(rows, p.ActorID, p.AuthorID, model.NotifTypeComment, p.CommentID, p.NoteID, "评论了你的笔记", p.EventID)
+				} else {
+					rows = addNotif(rows, p.ActorID, p.ReplyToUserID, model.NotifTypeReplyComment, p.CommentID, p.NoteID, "回复了你的评论", p.EventID)
+					if p.ReplyToUserID != p.AuthorID {
+						rows = addNotif(rows, p.ActorID, p.AuthorID, model.NotifTypeComment, p.CommentID, p.NoteID, "评论了你的笔记", p.EventID)
+					}
+				}
+				for _, name := range p.MentionNames {
+					mentionNames[name] = struct{}{}
+				}
+			case events.UserFollowed:
+				rows = addNotif(rows, p.ActorID, p.AuthorID, model.NotifTypeFollow, p.ActorID, 0, "关注了你", p.EventID)
+			}
+		}
+
+		// @提及：整批只查一次用户名
+		if len(mentionNames) > 0 {
+			names := make([]string, 0, len(mentionNames))
+			for n := range mentionNames {
+				names = append(names, n)
+			}
+			users, err := ur.FindByUsernames(ctx, names)
+			if err == nil && len(users) > 0 {
+				for _, m := range msgs {
+					if m.Type != events.CommentCreated || len(m.Payload.MentionNames) == 0 {
+						continue
+					}
+					targetID := m.Payload.CommentID
+					if targetID == 0 {
+						targetID = m.Payload.NoteID
+					}
+					for _, u := range users {
+						if !containsName(m.Payload.MentionNames, u.Username) || u.ID == m.Payload.ActorID {
+							continue
+						}
+						if blocked, _ := bs.IsBlockedEitherWay(ctx, m.Payload.ActorID, u.ID); blocked {
+							continue
+						}
+						rows = addNotif(rows, m.Payload.ActorID, u.ID, model.NotifTypeMention, targetID, m.Payload.NoteID, "@提到了你", m.Payload.EventID)
+					}
+				}
+			}
+		}
+		return ns.BatchCreate(ctx, rows)
+	}
 }

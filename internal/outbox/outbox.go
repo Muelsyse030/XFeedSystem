@@ -125,18 +125,41 @@ func (r *Relay) Run(ctx context.Context) error {
 		if len(pub) > 0 {
 			if err := r.bus.PublishBatch(ctx, pub); err != nil {
 				// 发布失败：整批重试（attempts+1）
+				attemptIDs := make([]int64, 0, len(evts))
 				for i, evt := range evts {
 					if ok[i] {
-						_ = r.repo.MarkAttempt(ctx, evt.ID)
+						attemptIDs = append(attemptIDs, evt.ID)
 					}
 				}
+				_ = r.repo.MarkAttemptBatch(ctx, attemptIDs)
 				continue
 			}
 		}
+		publishedIDs := make([]int64, 0, len(evts))
 		for i, evt := range evts {
 			if ok[i] {
-				_ = r.repo.MarkPublished(ctx, evt.ID)
+				publishedIDs = append(publishedIDs, evt.ID)
 			}
 		}
+		_ = r.repo.MarkPublishedBatch(ctx, publishedIDs)
 	}
+}
+
+func (r *Repo) MarkPublishedBatch(ctx context.Context, ids []int64) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	return r.db.WithContext(ctx).Model(&Event{}).
+		Where("id IN ?", ids).
+		Updates(map[string]interface{}{"status": 1, "published_at": time.Now()}).Error
+}
+
+// MarkAttemptBatch 一次 UPDATE 批量累加重试次数
+func (r *Repo) MarkAttemptBatch(ctx context.Context, ids []int64) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	return r.db.WithContext(ctx).Model(&Event{}).
+		Where("id IN ?", ids).
+		Update("attempts", gorm.Expr("attempts + 1")).Error
 }

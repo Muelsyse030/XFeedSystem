@@ -240,3 +240,11 @@ func (c *Consumer) RunBatch(ctx context.Context, handle BatchHandler) error {
 		}
 	}
 }
+
+func (s *Stream) Pending(ctx context.Context, group string) (int64, error) {
+	info, err := s.client.XPending(ctx, s.key, group).Result()
+	if err != nil {
+		return 0, err
+	}
+	return info.Count, nil
+}
