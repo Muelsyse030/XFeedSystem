@@ -47,6 +47,20 @@ type Config struct {
 		Batch          int  `mapstructure:"batch"`
 		PollIntervalMs int  `mapstructure:"poll_interval_ms"`
 	} `mapstructure:"worker"`
+	Event struct {
+		Relay struct {
+			BatchSize  int `mapstructure:"batch_size"`
+			IntervalMs int `mapstructure:"interval_ms"`
+		} `mapstructure:"relay"`
+		Consumer struct {
+			BatchSize int `mapstructure:"batch_size"`
+			BlockMs   int `mapstructure:"block_ms"`
+		} `mapstructure:"consumer"`
+		Counter struct {
+			FlushIntervalMs int `mapstructure:"flush_interval_ms"`
+			FlushBatchSize  int `mapstructure:"flush_batch_size"`
+		} `mapstructure:"counter"`
+	} `mapstructure:"event"`
 }
 
 func LoadConfig() (*Config, error) {
@@ -100,6 +114,25 @@ func LoadConfig() (*Config, error) {
 	var config Config
 	if err := viper.Unmarshal(&config); err != nil {
 		return nil, err
+	}
+
+	if config.Event.Relay.BatchSize <= 0 {
+		config.Event.Relay.BatchSize = 500
+	}
+	if config.Event.Relay.IntervalMs <= 0 {
+		config.Event.Relay.IntervalMs = 100
+	}
+	if config.Event.Consumer.BatchSize <= 0 {
+		config.Event.Consumer.BatchSize = 64
+	}
+	if config.Event.Consumer.BlockMs <= 0 {
+		config.Event.Consumer.BlockMs = 100
+	}
+	if config.Event.Counter.FlushIntervalMs <= 0 {
+		config.Event.Counter.FlushIntervalMs = 2000
+	}
+	if config.Event.Counter.FlushBatchSize <= 0 {
+		config.Event.Counter.FlushBatchSize = 500
 	}
 	return &config, nil
 }

@@ -36,3 +36,14 @@ worker:
   relay_enabled: true
   batch: 100
   poll_interval_ms: 200
+
+event:
+  relay:
+    batch_size: 500
+    interval_ms: 100
+  consumer:
+    batch_size: 64
+    block_ms: 100
+  counter:
+    flush_interval_ms: 2000
+    flush_batch_size: 500

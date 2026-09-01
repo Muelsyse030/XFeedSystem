@@ -105,20 +105,37 @@ func (r *Relay) Run(ctx context.Context) error {
 			logger.Sugar.Errorf("outbox claim error %v", err)
 			continue
 		}
-		for _, evt := range evts {
+		if len(evts) == 0 {
+			continue
+		}
+
+		pub := make([]queue.PublishEvent, 0, len(evts))
+		ok := make([]bool, len(evts))
+		for i, evt := range evts {
 			var p events.Payload
 			if err := json.Unmarshal([]byte(evt.Payload), &p); err != nil {
 				logger.Sugar.Errorf("outbox event %d payload broken: %v", evt.ID, err)
-				_ = r.repo.MarkPublished(ctx, evt.ID)
+				_ = r.repo.MarkPublished(ctx, evt.ID) // 坏消息直接丢弃
 				continue
 			}
 			p.EventID = evt.ID
-			if err := r.bus.Publish(ctx, evt.EventType, p); err != nil {
-				_ = r.repo.MarkAttempt(ctx, evt.ID)
+			pub = append(pub, queue.PublishEvent{Type: evt.EventType, Payload: p})
+			ok[i] = true
+		}
+		if len(pub) > 0 {
+			if err := r.bus.PublishBatch(ctx, pub); err != nil {
+				// 发布失败：整批重试（attempts+1）
+				for i, evt := range evts {
+					if ok[i] {
+						_ = r.repo.MarkAttempt(ctx, evt.ID)
+					}
+				}
 				continue
 			}
-			if err := r.repo.MarkPublished(ctx, evt.ID); err != nil {
-				continue
+		}
+		for i, evt := range evts {
+			if ok[i] {
+				_ = r.repo.MarkPublished(ctx, evt.ID)
 			}
 		}
 	}

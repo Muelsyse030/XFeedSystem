@@ -408,6 +408,73 @@ func (c *RedisCache) InvalidateFeedRawForUser(ctx context.Context, userID int64)
 	return c.Delete(ctx, FeedUserRankKey(userID))
 }
 
+var drainCountersScript = redis.NewScript(`
+local res = {}
+for i, k in ipairs(KEYS) do
+    local v = redis.call('GET', k)
+    if v then
+        res[i] = v
+        redis.call('SET', k, '0')
+    else
+        res[i] = '0'
+    end
+end
+return res
+`)
+
+func (c *RedisCache) DrainCounters(ctx context.Context, keys []string) ([]int64, error) {
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	v, err := drainCountersScript.Run(ctx, c.client, keys).Result()
+	if err != nil {
+		return nil, err
+	}
+	items, ok := v.([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("unexpected drain result type %T", v)
+	}
+	out := make([]int64, len(items))
+	for i, item := range items {
+		s, _ := item.(string)
+		n, _ := strconv.ParseInt(s, 10, 64)
+		out[i] = n
+	}
+	return out, nil
+}
+
+func (c *RedisCache) SetNXMany(ctx context.Context, keys []string, ttl time.Duration) ([]bool, error) {
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	pipe := c.client.Pipeline()
+	cmds := make([]*redis.BoolCmd, len(keys))
+	for i, k := range keys {
+		cmds[i] = pipe.SetNX(ctx, k, "1", ttl)
+	}
+	if _, err := pipe.Exec(ctx); err != nil {
+		return nil, err
+	}
+	out := make([]bool, len(cmds))
+	for i, cmd := range cmds {
+		out[i] = cmd.Val()
+	}
+	return out, nil
+}
+
+// IncrByMany 批量 INCRBY（Pipeline）：keys 与 deltas 一一对应
+func (c *RedisCache) IncrByMany(ctx context.Context, keys []string, deltas []int64) error {
+	if len(keys) == 0 {
+		return nil
+	}
+	pipe := c.client.Pipeline()
+	for i, k := range keys {
+		pipe.IncrBy(ctx, k, deltas[i])
+	}
+	_, err := pipe.Exec(ctx)
+	return err
+}
+
 func BlockedIDsKey(userID int64) string {
 	return fmt.Sprintf("block:blocked:%d", userID)
 }
@@ -490,4 +557,20 @@ func UserHideCountKey(userID int64) string {
 
 func FeedNoteKey(noteID int64) string {
 	return fmt.Sprintf("feed:note:%d", noteID)
+}
+
+func CounterLikeKey(noteID int64) string {
+	return fmt.Sprintf("counter:like:%d", noteID)
+}
+
+func CounterFavoriteKey(noteID int64) string {
+	return fmt.Sprintf("counter:favorite:%d", noteID)
+}
+
+func CounterCommentKey(noteID int64) string {
+	return fmt.Sprintf("counter:comment:%d", noteID)
+}
+
+func CounterPrefix() string {
+	return "counter:"
 }

@@ -10,9 +10,10 @@ const (
 	StreamKey = "xfeed:events"
 
 	// GroupFeed 消费组
-	GroupFeed   = "xfeed:feed"
-	GroupSearch = "xfeed:search"
-	GroupNotify = "xfeed:notify"
+	GroupFeed    = "xfeed:feed"
+	GroupSearch  = "xfeed:search"
+	GroupNotify  = "xfeed:notify"
+	GroupCounter = "xfeed:counter"
 
 	// NoteCreated 事件类型
 	NoteCreated     = "note.created"

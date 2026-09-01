@@ -14,9 +14,11 @@ import (
 	"XFeedSystem/internal/service"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/signal"
-	"sync"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -24,10 +26,11 @@ import (
 	"gorm.io/gorm"
 )
 
-var (
-	feedDebounceMu sync.Mutex
-	feedDebounce   = map[int64]*time.Timer{}
-)
+type counterDelta struct {
+	Like     int64
+	Favorite int64
+	Comment  int64
+}
 
 func main() {
 	logger.Init("info")
@@ -88,7 +91,7 @@ func main() {
 	}
 
 	start := func(group string, h queue.Handler) {
-		c := queue.NewConsumer(streamClient, group)
+		c := queue.NewConsumer(streamClient, group, int64(cfg.Event.Consumer.BatchSize))
 		go func() {
 			if err := c.Run(ctx, h); err != nil {
 				logger.Sugar.Errorf("consumer %s 退出: %v", group, err)
@@ -97,9 +100,25 @@ func main() {
 		logger.Sugar.Infof("consumer %s 已启动", group)
 	}
 
+	startBatch := func(group string, h queue.BatchHandler) {
+		c := queue.NewConsumer(streamClient, group, int64(cfg.Event.Consumer.BatchSize))
+		go func() {
+			if err := c.RunBatch(ctx, h); err != nil {
+				logger.Sugar.Errorf("consumer %s 退出: %v", group, err)
+			}
+		}()
+		logger.Sugar.Infof("consumer %s (batch) 已启动", group)
+	}
+
 	start(events.GroupFeed, feedHandler(feedService, redisCache))
 	start(events.GroupSearch, searchHandler(searchRepo, noteRepo))
 	start(events.GroupNotify, notifyHandler(notifService, userRepo, blockService))
+	startEventMonitor(ctx, db, queue.NewStream(streamClient), 10*time.Second)
+	startBatch(events.GroupCounter, counterBatchHandler(redisCache))
+
+	StartCounterFlusher(ctx, redisCache, noteRepo, feedService,
+		time.Duration(cfg.Event.Counter.FlushIntervalMs)*time.Millisecond,
+		cfg.Event.Counter.FlushBatchSize) // 每 N ms 批量落库
 
 	// 等待退出信号
 	quit := make(chan os.Signal, 1)
@@ -128,18 +147,19 @@ func feedHandler(feed *service.FeedService, rc *cache.RedisCache) queue.Handler 
 				return err
 			}
 			return rc.InvalidateFeedRawAll(ctx)
-		case events.NoteLiked, events.NoteUnliked,
-			events.NoteFavorited, events.NoteUnfavorited,
-			events.CommentCreated, events.CommentDeleted:
-			// 互动只更新单条分数（2s 去抖合并）；排名缓存 10s TTL 自然收敛，不全局失效
-			debounceUpsert(feed, ctx, p.NoteID)
-			return nil
 		case events.UserFollowed, events.UserUnfollowed:
 			return rc.InvalidateFeedRawForUser(ctx, p.ActorID)
 		default:
 			return nil
 		}
 	}
+}
+
+const counterDedupTTL = 24 * time.Hour
+
+func counterDedupKey(eventID int64) string {
+	// 注意：不能用 "counter:" 前缀，否则会被 Flusher 的 SCAN counter:* 误扫（去重键会海量堆积）
+	return fmt.Sprintf("cntdedup:%d", eventID)
 }
 
 // searchHandler 维护 Meilisearch 索引。正文等大字段不放进事件，
@@ -246,18 +266,191 @@ func createMentions(ctx context.Context, ns *service.NotificationService, ur rep
 	return nil
 }
 
-func debounceUpsert(feed *service.FeedService, ctx context.Context, noteID int64) {
-	feedDebounceMu.Lock()
-	if t, ok := feedDebounce[noteID]; ok {
-		t.Reset(2 * time.Second)
-		feedDebounceMu.Unlock()
-		return
+func StartCounterFlusher(ctx context.Context, rc *cache.RedisCache, noteRepo *repo.GormNoteRepo, feed *service.FeedService, interval time.Duration, batch int) {
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := flushCounters(ctx, rc, noteRepo, feed, batch); err != nil {
+					logger.Sugar.Errorf("flush counters err: %v", err)
+				}
+			}
+		}
+	}()
+}
+
+func flushCounters(ctx context.Context, rc *cache.RedisCache, noteRepo *repo.GormNoteRepo, feed *service.FeedService, batch int) error {
+	keys, err := rc.ScanKeys(ctx, cache.CounterPrefix()+"*", 500)
+	if err != nil {
+		return err
 	}
-	feedDebounce[noteID] = time.AfterFunc(2*time.Second, func() {
-		feedDebounceMu.Lock()
-		delete(feedDebounce, noteID)
-		feedDebounceMu.Unlock()
-		_ = feed.UpsertNoteScore(ctx, noteID)
-	})
-	feedDebounceMu.Unlock()
+	if len(keys) == 0 {
+		return nil
+	}
+	for i := 0; i < len(keys); i += batch {
+		end := i + batch
+		if end > len(keys) {
+			end = len(keys)
+		}
+		chunk := keys[i:end]
+		vals, err := rc.DrainCounters(ctx, chunk)
+		if err != nil {
+			return err
+		}
+
+		like := map[int64]int64{}
+		favorite := map[int64]int64{}
+		comment := map[int64]int64{}
+		affected := map[int64]struct{}{}
+		for j, k := range chunk {
+			kind, id, ok := parseCounterKey(k)
+			if !ok || vals[j] == 0 {
+				continue
+			}
+			affected[id] = struct{}{}
+			switch kind {
+			case "like":
+				like[id] += vals[j]
+			case "favorite":
+				favorite[id] += vals[j]
+			case "comment":
+				comment[id] += vals[j]
+			}
+		}
+		if len(like)+len(favorite)+len(comment) == 0 {
+			continue
+		}
+
+		if err := noteRepo.BatchAddCounters(ctx, like, favorite, comment); err != nil {
+			// 落库失败：把增量原样写回 Redis，下一轮再刷，不丢计数
+			rollbackCounters(ctx, rc, like, favorite, comment)
+			return err
+		}
+
+		// 计数已落库：清笔记缓存（详情显示新计数）+ 重算 Feed 分数（打分依赖计数）
+		for id := range affected {
+			_ = rc.Delete(ctx, cache.NoteKey(id), cache.FeedNoteKey(id), cache.NoteDetailRawKey(id))
+			_ = feed.UpsertNoteScore(ctx, id)
+		}
+	}
+	return nil
+}
+
+func parseCounterKey(k string) (string, int64, bool) {
+	rest := strings.TrimPrefix(k, cache.CounterPrefix())
+	parts := strings.Split(rest, ":")
+	if len(parts) != 2 {
+		return "", 0, false
+	}
+	id, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil {
+		return "", 0, false
+	}
+	return parts[0], id, true
+}
+
+func rollbackCounters(ctx context.Context, rc *cache.RedisCache, like, favorite, comment map[int64]int64) {
+	for id, d := range like {
+		_, _ = rc.IncrBy(ctx, cache.CounterLikeKey(id), d)
+	}
+	for id, d := range favorite {
+		_, _ = rc.IncrBy(ctx, cache.CounterFavoriteKey(id), d)
+	}
+	for id, d := range comment {
+		_, _ = rc.IncrBy(ctx, cache.CounterCommentKey(id), d)
+	}
+}
+
+// counterBatchHandler 整批事件：先去重（SetNX Pipeline），再按 (noteID, 类型) 聚合，最后 INCRBY Pipeline。
+// 1000 条 Like 只产生 1~N 条 INCRBY，而非 1000 条 INCR。
+func counterBatchHandler(rc *cache.RedisCache) queue.BatchHandler {
+	return func(ctx context.Context, msgs []queue.BatchMessage) error {
+		if len(msgs) == 0 {
+			return nil
+		}
+		// 1) 批量幂等去重
+		dedupKeys := make([]string, len(msgs))
+		for i, m := range msgs {
+			dedupKeys[i] = counterDedupKey(m.Payload.EventID)
+		}
+		first, err := rc.SetNXMany(ctx, dedupKeys, counterDedupTTL)
+		if err != nil {
+			return err
+		}
+
+		// 2) 按 (noteID, 类型) 聚合增量
+		deltas := map[int64]*counterDelta{}
+		for i, m := range msgs {
+			if !first[i] {
+				continue // 重复投递，跳过
+			}
+			d := deltas[m.Payload.NoteID]
+			if d == nil {
+				d = &counterDelta{}
+				deltas[m.Payload.NoteID] = d
+			}
+			switch m.Type {
+			case events.NoteLiked:
+				d.Like++
+			case events.NoteUnliked:
+				d.Like--
+			case events.NoteFavorited:
+				d.Favorite++
+			case events.NoteUnfavorited:
+				d.Favorite--
+			case events.CommentCreated:
+				if m.Payload.ParentID == 0 {
+					d.Comment++ // 回复评论不计入
+				}
+			case events.CommentDeleted:
+				if m.Payload.ParentID == 0 {
+					d.Comment--
+				}
+			}
+		}
+
+		// 3) 聚合后 INCRBY Pipeline
+		keys := make([]string, 0, len(deltas)*3)
+		vals := make([]int64, 0, len(deltas)*3)
+		for id, d := range deltas {
+			if d.Like != 0 {
+				keys = append(keys, cache.CounterLikeKey(id))
+				vals = append(vals, d.Like)
+			}
+			if d.Favorite != 0 {
+				keys = append(keys, cache.CounterFavoriteKey(id))
+				vals = append(vals, d.Favorite)
+			}
+			if d.Comment != 0 {
+				keys = append(keys, cache.CounterCommentKey(id))
+				vals = append(vals, d.Comment)
+			}
+		}
+		return rc.IncrByMany(ctx, keys, vals)
+	}
+}
+
+func startEventMonitor(ctx context.Context, db *gorm.DB, stream *queue.Stream, interval time.Duration) {
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				var pending int64
+				_ = db.Raw("SELECT COUNT(*) FROM outbox_events WHERE status = 0").Scan(&pending).Error
+				streamLen, _ := stream.Len(ctx)
+				logger.Sugar.Infow("event backlog",
+					"outbox_pending", pending,
+					"stream_len", streamLen,
+				)
+			}
+		}
+	}()
 }

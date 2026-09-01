@@ -197,7 +197,7 @@ func (s *NoteService) Like(ctx context.Context, noteID, userID int64) (bool, err
 	if userID <= 0 {
 		return false, ErrInvalidUserID
 	}
-	note, err := s.repo.GetByID(ctx, noteID)
+	note, err := s.GetByID(ctx, noteID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return false, ErrNoteNotFound
@@ -238,7 +238,7 @@ func (s *NoteService) Favorite(ctx context.Context, noteID, userID int64) (bool,
 	if userID <= 0 {
 		return false, ErrInvalidUserID
 	}
-	note, err := s.repo.GetByID(ctx, noteID)
+	note, err := s.GetByID(ctx, noteID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return false, ErrNoteNotFound
@@ -282,7 +282,7 @@ func (s *NoteService) ListFavorites(ctx context.Context, userID, cursor int64, l
 	return s.repo.FavoriteList(ctx, userID, cursor, limit)
 }
 func (s *NoteService) CreateComment(ctx context.Context, userID, noteID int64, content string) (*model.NoteComment, error) {
-	note, err := s.repo.GetByID(ctx, noteID)
+	note, err := s.GetByID(ctx, noteID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNoteNotFound
@@ -305,7 +305,7 @@ func (s *NoteService) CreateReply(ctx context.Context, userID, noteID, parentID,
 	if strings.TrimSpace(content) == "" {
 		return nil, ErrInvalidComment
 	}
-	note, err := s.repo.GetByID(ctx, noteID)
+	note, err := s.GetByID(ctx, noteID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNoteNotFound
