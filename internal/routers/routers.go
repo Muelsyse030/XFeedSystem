@@ -26,7 +26,9 @@ func SetupRouter(db *gorm.DB, appCfg config.Config) *gin.Engine {
 	if os.Getenv("ENABLE_PPROF") == "1" {
 		registerPprof(r)
 	}
-	r.Use(middleware.LoggerMiddleware())
+	if os.Getenv("XFEED_REQUEST_LOG") != "0" {
+		r.Use(middleware.LoggerMiddleware())
+	}
 	redisCache := cache.NewRedisCache(appCfg.Redis.Addr, appCfg.Redis.Password, appCfg.Redis.DB)
 	searchRepo := repo.NewSearchRepo(appCfg.Meilisearch.Host, appCfg.Meilisearch.APIKey, appCfg.Meilisearch.Index)
 	if err := searchRepo.EnsureIndex(context.Background()); err != nil {
@@ -53,7 +55,7 @@ func SetupRouter(db *gorm.DB, appCfg config.Config) *gin.Engine {
 	adminService := service.NewAdminService(adminRepo)
 	adminHandler := handler.NewAdminHandler(adminService)
 
-	userService := service.NewUserService(userRepo, redisCache, blockService, outboxRepo)
+	userService := service.NewUserService(userRepo, redisCache, blockService)
 	userHandler := handler.NewUserHandler(userService, jwtService, redisCache)
 
 	statsRepo := repo.NewGormStatsRepo(db)
@@ -64,7 +66,7 @@ func SetupRouter(db *gorm.DB, appCfg config.Config) *gin.Engine {
 	feedHandler := handler.NewFeedHandler(feedService, redisCache)
 
 	noteRepo := repo.NewGormNoteRepo(db, outboxRepo)
-	noteService := service.NewNoteService(noteRepo, redisCache, blockService, topicService, userRepo, outboxRepo)
+	noteService := service.NewNoteService(noteRepo, redisCache, blockService, topicService, userRepo)
 	noteHandler := handler.NewNoteHandler(noteService, userRepo, redisCache, statsService)
 
 	topicHandler := handler.NewTopicHandler(topicService, feedService, redisCache)
@@ -78,7 +80,7 @@ func SetupRouter(db *gorm.DB, appCfg config.Config) *gin.Engine {
 	reportHandler := handler.NewReportHandler(reportService)
 
 	if err != nil {
-		logger.Sugar.Warnf("warn: init oss storage: %v", err)
+		logger.Sugar.Warnf("warn: init cos storage: %v", err)
 		storageService = &service.StorageService{} // 降级为空服务，避免 nil panic
 	}
 	uploadHandler := handler.NewUploadHandler(storageService)

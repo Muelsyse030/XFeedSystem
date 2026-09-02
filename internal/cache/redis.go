@@ -350,21 +350,18 @@ func (c *RedisCache) InvalidateFeedEngineForUser(ctx context.Context, userID int
 	return c.Delete(ctx, FeedEngineKey(userID))
 }
 
-// 效所有 feed 页字节缓存
+// 失效某个用户的 feed 页字节缓存
 func (c *RedisCache) InvalidateFeedRawAll(ctx context.Context) error {
 	if err := c.DeleteByPattern(ctx, FeedForYouRawPrefix()+"*"); err != nil {
 		return err
 	}
-	return c.DeleteByPattern(ctx, FeedPageRawPrefix()+"*")
-}
-
-// 失效某个用户的 feed 页字节缓存
-func (c *RedisCache) InvalidateFeedRawForUser(ctx context.Context, userID int64) error {
-	u := strconv.FormatInt(userID, 10)
-	if err := c.DeleteByPattern(ctx, FeedForYouRawPrefix()+u+":*"); err != nil {
+	if err := c.DeleteByPattern(ctx, FeedPageRawPrefix()+"*"); err != nil {
 		return err
 	}
-	return c.DeleteByPattern(ctx, FeedPageRawPrefix()+u+":*")
+	if err := c.DeleteByPattern(ctx, "feed:user:*:rank"); err != nil {
+		return err
+	}
+	return c.DeleteByPattern(ctx, FeedUserRankPrefix()+"*")
 }
 
 func (c *RedisCache) SetNX(ctx context.Context, key, value string, ttl time.Duration) (bool, error) {
@@ -376,8 +373,115 @@ func (c *RedisCache) InvalidateTopicFeedRaw(ctx context.Context) error {
 	return c.DeleteByPattern(ctx, TopicFeedRawPrefix()+"*")
 }
 
+func (c *RedisCache) HIncrBy(ctx context.Context, key, field string, incr int64) error {
+	return c.client.HIncrBy(ctx, key, field, incr).Err()
+}
+
+// HGetAll 读取哈希全部字段
+func (c *RedisCache) HGetAll(ctx context.Context, key string) (map[string]string, error) {
+	return c.client.HGetAll(ctx, key).Result()
+}
+
+// ZRangeByScore 按分数升序取区间（排名缓存用）
+func (c *RedisCache) ZRangeByScore(ctx context.Context, key string, min, max string, offset, count int64) ([]redis.Z, error) {
+	return c.client.ZRangeByScoreWithScores(ctx, key, &redis.ZRangeBy{
+		Min:    min,
+		Max:    max,
+		Offset: offset,
+		Count:  count,
+	}).Result()
+}
+
+// ZCard 返回有序集合成员数（打分 ZSET 对账用）
+func (c *RedisCache) ZCard(ctx context.Context, key string) (int64, error) {
+	return c.client.ZCard(ctx, key).Result()
+}
+
+func (c *RedisCache) InvalidateFeedRawForUser(ctx context.Context, userID int64) error {
+	u := strconv.FormatInt(userID, 10)
+	if err := c.DeleteByPattern(ctx, FeedForYouRawPrefix()+u+":*"); err != nil {
+		return err
+	}
+	if err := c.DeleteByPattern(ctx, FeedPageRawPrefix()+u+":*"); err != nil {
+		return err
+	}
+	return c.Delete(ctx, FeedUserRankKey(userID))
+}
+
+var drainCountersScript = redis.NewScript(`
+local res = {}
+for i, k in ipairs(KEYS) do
+    local v = redis.call('GET', k)
+    if v then
+        res[i] = v
+        redis.call('SET', k, '0')
+    else
+        res[i] = '0'
+    end
+end
+return res
+`)
+
+func (c *RedisCache) DrainCounters(ctx context.Context, keys []string) ([]int64, error) {
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	v, err := drainCountersScript.Run(ctx, c.client, keys).Result()
+	if err != nil {
+		return nil, err
+	}
+	items, ok := v.([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("unexpected drain result type %T", v)
+	}
+	out := make([]int64, len(items))
+	for i, item := range items {
+		s, _ := item.(string)
+		n, _ := strconv.ParseInt(s, 10, 64)
+		out[i] = n
+	}
+	return out, nil
+}
+
+func (c *RedisCache) SetNXMany(ctx context.Context, keys []string, ttl time.Duration) ([]bool, error) {
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	pipe := c.client.Pipeline()
+	cmds := make([]*redis.BoolCmd, len(keys))
+	for i, k := range keys {
+		cmds[i] = pipe.SetNX(ctx, k, "1", ttl)
+	}
+	if _, err := pipe.Exec(ctx); err != nil {
+		return nil, err
+	}
+	out := make([]bool, len(cmds))
+	for i, cmd := range cmds {
+		out[i] = cmd.Val()
+	}
+	return out, nil
+}
+
+// IncrByMany 批量 INCRBY（Pipeline）：keys 与 deltas 一一对应
+func (c *RedisCache) IncrByMany(ctx context.Context, keys []string, deltas []int64) error {
+	if len(keys) == 0 {
+		return nil
+	}
+	pipe := c.client.Pipeline()
+	for i, k := range keys {
+		pipe.IncrBy(ctx, k, deltas[i])
+	}
+	_, err := pipe.Exec(ctx)
+	return err
+}
+
 func BlockedIDsKey(userID int64) string {
 	return fmt.Sprintf("block:blocked:%d", userID)
+}
+
+// BlockedFlagKey 标记某用户 blocked 集合是否已缓存（空集合也缓存，避免无拉黑用户反复回源）
+func BlockedFlagKey(userID int64) string {
+	return fmt.Sprintf("block:blockedflag:%d", userID)
 }
 
 func FeedForYouKeyV2(userID int64, limit int) string {
@@ -434,4 +538,44 @@ func FeedPageRawPrefix() string {
 
 func TopicFeedRawPrefix() string {
 	return fmt.Sprintf("topic:feed:raw:")
+}
+
+func FeedUserRankKey(userID int64) string {
+	return fmt.Sprintf("feed:user:%d:rank", userID)
+}
+
+func FeedUserRankPrefix() string {
+	return "feed:user:*:rank"
+}
+
+func FollowedTopicsKey(userID int64) string {
+	return fmt.Sprintf("user:%d:topics", userID)
+}
+
+func UserHiddenKey(userID int64) string {
+	return fmt.Sprintf("user:%d:hidden", userID)
+}
+
+func UserHideCountKey(userID int64) string {
+	return fmt.Sprintf("user:%d:hide_count", userID)
+}
+
+func FeedNoteKey(noteID int64) string {
+	return fmt.Sprintf("feed:note:%d", noteID)
+}
+
+func CounterLikeKey(noteID int64) string {
+	return fmt.Sprintf("counter:like:%d", noteID)
+}
+
+func CounterFavoriteKey(noteID int64) string {
+	return fmt.Sprintf("counter:favorite:%d", noteID)
+}
+
+func CounterCommentKey(noteID int64) string {
+	return fmt.Sprintf("counter:comment:%d", noteID)
+}
+
+func CounterPrefix() string {
+	return "counter:"
 }

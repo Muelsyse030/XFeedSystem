@@ -11,7 +11,7 @@
 | 事件 | 事务性 Outbox（MySQL）· Redis Streams（三消费组） |
 | 搜索 | Meilisearch（Docker） |
 | 部署 | nginx（TLS/反代/keepalive）· systemd · Docker Compose |
-| 文件 | 阿里云 OSS |
+| 文件 | 腾讯云 COS |
 
 ## 架构
 
@@ -22,7 +22,7 @@ graph LR
     A --> M[(MySQL)]
     A --> R[(Redis)]
     A --> S[Meilisearch]
-    A --> O[OSS]
+    A --> O[COS]
     N --> D[前端 dist]
     W[xfeed-worker] -->|轮询 outbox_events| M
     W -->|Redis Streams 三消费组| R
@@ -110,7 +110,7 @@ docker run -d --name feed_meilisearch -p 7700:7700 \
 
 ### 配置
 
-复制 `.env.example` 为 `.env`，按需覆盖 `config.yaml` 中的敏感项（生产必须覆盖 `XFEED_JWT_SECRET`、`XFEED_MEILISEARCH_API_KEY`、OSS 密钥）：
+复制 `.env.example` 为 `.env`，按需覆盖 `config.yaml` 中的敏感项（生产必须覆盖 `XFEED_JWT_SECRET`、`XFEED_MEILISEARCH_API_KEY`、COS 密钥）：
 
 ```bash
 cp .env.example .env
@@ -171,7 +171,7 @@ make deploy SERVER=user@host
 | GET | `/notes/:id/versions` `/notes/:id/versions/:vid` | 笔记版本列表 / 版本详情（仅作者） |
 | POST | `/notes/:id/restore/:vid` | 恢复指定版本（仅作者） |
 | POST/DELETE | `/users/:id/follow` `/users/:id/block` | 关注 / 拉黑 |
-| POST | `/upload/image` `/upload/video` | 图片 / 视频上传（OSS） |
+| POST | `/upload/image` `/upload/video` | 图片 / 视频上传（COS） |
 | POST | `/messages` | 发送站内信（`client_message_id` 幂等） |
 | GET | `/conversations` | 会话列表（游标分页） |
 | GET | `/messages?peer_id=` | 与指定用户的聊天记录 |

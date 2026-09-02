@@ -5,13 +5,15 @@ import (
 	"XFeedSystem/internal/model"
 	"XFeedSystem/internal/outbox"
 	"context"
+	"fmt"
+	"strings"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
 
 type NoteRepo interface {
-	Create(note *model.Note) (*model.Note, error)
+	Create(ctx context.Context, note *model.Note, mentionNames []string) (*model.Note, error)
 	GetByID(ctx context.Context, id int64) (*model.Note, error)
 	DeleteByID(ctx context.Context, id int64, authorID int64) error
 	ListByAuthorID(ctx context.Context, authorID int64, cursor int64, limit int) ([]*model.Note, error)
@@ -25,7 +27,7 @@ type NoteRepo interface {
 	IsFavorite(ctx context.Context, noteID, userID int64) (bool, error)
 	FavoriteList(ctx context.Context, userID int64, cursor int64, limit int) ([]*model.Note, int64, error)
 
-	CreateComment(ctx context.Context, userID, noteID, parentID, replyToUserID int64, content string) (*model.NoteComment, error)
+	CreateComment(ctx context.Context, userID, noteID, parentID, replyToUserID int64, content string, noteAuthorID int64, mentionNames []string) (*model.NoteComment, error)
 	GetCommentByID(ctx context.Context, commentID int64) (*model.NoteComment, error)
 	ListCommentsByNoteID(ctx context.Context, noteID, cursor int64, limit int) ([]*model.NoteComment, error)
 	ListRepliesByParentID(ctx context.Context, noteID, parentID int64, limit int) ([]*model.NoteComment, error)
@@ -47,8 +49,19 @@ func NewGormNoteRepo(db *gorm.DB, outbox *outbox.Repo) *GormNoteRepo {
 		outbox: outbox,
 	}
 }
-func (r *GormNoteRepo) Create(note *model.Note) (*model.Note, error) {
-	return note, r.db.Create(note).Error
+func (r *GormNoteRepo) Create(ctx context.Context, note *model.Note, mentionNames []string) (*model.Note, error) {
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(note).Error; err != nil {
+			return err
+		}
+		return r.outbox.EnqueueTx(ctx, tx, events.NoteCreated, events.Payload{
+			NoteID:       note.ID, // AUTO_INCREMENT 已回填
+			AuthorID:     note.AuthorID,
+			ActorID:      note.AuthorID,
+			MentionNames: mentionNames,
+		})
+	})
+	return note, err
 }
 
 func (r *GormNoteRepo) ListByAuthorID(ctx context.Context, authorID int64, cursor int64, limit int) ([]*model.Note, error) {
@@ -83,12 +96,16 @@ func (r *GormNoteRepo) GetByID(ctx context.Context, id int64) (*model.Note, erro
 	return &note, nil
 }
 func (r *GormNoteRepo) DeleteByID(ctx context.Context, id int64, authorID int64) error {
-	return r.db.WithContext(ctx).
-		Model(&model.Note{}).
-		Where("id = ? AND author_id = ? AND status = ?", id, authorID, model.NoteStatusPublished).
-		Updates(map[string]interface{}{
-			"status": model.NoteStatusDeleted,
-		}).Error
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&model.Note{}).
+			Where("id = ? AND author_id = ? AND status = ?", id, authorID, model.NoteStatusPublished).
+			Updates(map[string]interface{}{"status": model.NoteStatusDeleted}).Error; err != nil {
+			return err
+		}
+		return r.outbox.EnqueueTx(ctx, tx, events.NoteDeleted, events.Payload{
+			NoteID: id, AuthorID: authorID,
+		})
+	})
 }
 func (r *GormNoteRepo) Like(ctx context.Context, noteID, userID, authorID int64) (created bool, err error) {
 	err = r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -105,10 +122,6 @@ func (r *GormNoteRepo) Like(ctx context.Context, noteID, userID, authorID int64)
 			return nil
 		}
 		created = true
-		if err := tx.Model(&model.Note{}).Where("id = ?", noteID).
-			Update("like_count", gorm.Expr("like_count + 1")).Error; err != nil {
-			return err
-		}
 		return r.outbox.EnqueueTx(ctx, tx, events.NoteLiked, events.Payload{
 			NoteID: noteID, ActorID: userID, AuthorID: authorID,
 		})
@@ -127,12 +140,8 @@ func (r *GormNoteRepo) Unlike(ctx context.Context, noteID, userID, authorID int6
 			return nil
 		}
 		deleted = true
-		err := tx.Model(&model.Note{}).Where("id = ?", noteID).Update("like_count", gorm.Expr("like_count - 1")).Error
-		if err != nil {
-			return err
-		}
 		return r.outbox.EnqueueTx(ctx, tx, events.NoteUnliked, events.Payload{
-			NoteID: noteID, ActorID: userID, AuthorID: authorID,
+			NoteID: noteID, AuthorID: authorID, ActorID: userID,
 		})
 	})
 	return deleted, err
@@ -165,10 +174,6 @@ func (r *GormNoteRepo) Favorite(ctx context.Context, noteID, userID, authorID in
 			return nil
 		}
 		created = true
-		err := tx.Model(&model.Note{}).Where("id = ?", noteID).Update("favorite_count", gorm.Expr("favorite_count + 1")).Error
-		if err != nil {
-			return err
-		}
 		return r.outbox.EnqueueTx(ctx, tx, events.NoteFavorited, events.Payload{
 			NoteID: noteID, ActorID: userID, AuthorID: authorID,
 		})
@@ -186,12 +191,9 @@ func (r *GormNoteRepo) Unfavorite(ctx context.Context, noteID, userID, authorID 
 			return nil
 		}
 		deleted = true
-		err := tx.Model(&model.Note{}).Where("id = ?", noteID).Update("favorite_count", gorm.Expr("favorite_count - 1")).Error
-		if err != nil {
-			return err
-		}
 		return r.outbox.EnqueueTx(ctx, tx, events.NoteUnfavorited, events.Payload{
-			NoteID: noteID, ActorID: userID, AuthorID: authorID})
+			NoteID: noteID, ActorID: userID, AuthorID: authorID,
+		})
 	})
 	return deleted, err
 }
@@ -243,7 +245,7 @@ func (r *GormNoteRepo) FavoriteList(ctx context.Context, userID int64, cursor in
 	}
 	return out, nextCursor, nil
 }
-func (r *GormNoteRepo) CreateComment(ctx context.Context, userID, noteID, parentID, replyToUserID int64, content string) (*model.NoteComment, error) {
+func (r *GormNoteRepo) CreateComment(ctx context.Context, userID, noteID, parentID, replyToUserID int64, content string, noteAuthorID int64, mentionNames []string) (*model.NoteComment, error) {
 	comment := &model.NoteComment{
 		NoteID:        noteID,
 		UserID:        userID,
@@ -255,14 +257,20 @@ func (r *GormNoteRepo) CreateComment(ctx context.Context, userID, noteID, parent
 		if err := tx.Create(comment).Error; err != nil {
 			return err
 		}
-		if parentID == 0 {
-			return tx.Model(&model.Note{}).Where("id = ?", noteID).
-				Update("comment_count", gorm.Expr("comment_count + 1")).Error
-		}
-		return nil
+		// 一级评论计数不再同步更新：由 Counter Worker 处理（parent_id=0 才 +1）
+		return r.outbox.EnqueueTx(ctx, tx, events.CommentCreated, events.Payload{
+			NoteID:        noteID,
+			AuthorID:      noteAuthorID,
+			ActorID:       userID,
+			CommentID:     comment.ID,
+			ParentID:      parentID,
+			ReplyToUserID: replyToUserID,
+			MentionNames:  mentionNames,
+		})
 	})
 	return comment, err
 }
+
 func (r *GormNoteRepo) GetCommentByID(ctx context.Context, commentID int64) (*model.NoteComment, error) {
 	var comment model.NoteComment
 	if err := r.db.WithContext(ctx).
@@ -311,33 +319,35 @@ func (r *GormNoteRepo) DeleteComment(ctx context.Context, commentID int64, userI
 		if err := tx.Model(&cm).Update("status", model.NoteStatusDeleted).Error; err != nil {
 			return err
 		}
-		if cm.ParentID == 0 {
-			return tx.Model(&model.Note{}).Where("id = ?", cm.NoteID).
-				Update("comment_count", gorm.Expr("GREATEST(comment_count - 1, 0)")).Error
-		}
-		return nil
+		// 计数由 Counter Worker 处理；必须把 ParentID 放进事件，worker 才能判断是否减 comment_count
+		return r.outbox.EnqueueTx(ctx, tx, events.CommentDeleted, events.Payload{
+			NoteID: cm.NoteID, CommentID: commentID, ActorID: userID, ParentID: cm.ParentID,
+		})
 	})
 }
 
 func (r *GormNoteRepo) UpdataByAuthorID(ctx context.Context, noteID, authorID int64, title, content, images string, noteType int8, videoURL string, contentFormat int8) error {
-	res := r.db.WithContext(ctx).
-		Model(&model.Note{}).
-		Where("id = ? AND author_id = ? AND status = ?", noteID, authorID, model.NoteStatusPublished).
-		Updates(map[string]interface{}{
-			"title":          title,
-			"content":        content,
-			"images":         images,
-			"type":           noteType,
-			"video_url":      videoURL,
-			"content_format": contentFormat,
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		res := tx.Model(&model.Note{}).
+			Where("id = ? AND author_id = ? AND status = ?", noteID, authorID, model.NoteStatusPublished).
+			Updates(map[string]interface{}{
+				"title":          title,
+				"content":        content,
+				"images":         images,
+				"type":           noteType,
+				"video_url":      videoURL,
+				"content_format": contentFormat,
+			})
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return gorm.ErrRecordNotFound // 保持原有语义
+		}
+		return r.outbox.EnqueueTx(ctx, tx, events.NoteUpdated, events.Payload{
+			NoteID: noteID, AuthorID: authorID,
 		})
-	if res.Error != nil {
-		return res.Error
-	}
-	if res.RowsAffected == 0 {
-		return gorm.ErrRecordNotFound
-	}
-	return nil
+	})
 }
 
 func (r *GormNoteRepo) TrimNoteVersions(ctx context.Context, noteID int64, keep int) error {
@@ -389,4 +399,46 @@ func (r *GormNoteRepo) ListNoteVersions(ctx context.Context, noteID, cursor int6
 func (r *GormNoteRepo) InsertNoteVersion(ctx context.Context, v *model.NoteVersion) error {
 	//TODO implement me
 	return r.db.WithContext(ctx).Create(v).Error
+}
+
+func (r *GormNoteRepo) BatchAddCounters(ctx context.Context, like, favorite, comment map[int64]int64) error {
+	likeCase, favCase, comCase := "", "", ""
+	ids := make([]int64, 0)
+	seen := make(map[int64]struct{})
+
+	appendCase := func(m map[int64]int64, dst *string) {
+		for id, delta := range m {
+			if delta == 0 {
+				continue
+			}
+			if _, ok := seen[id]; !ok {
+				seen[id] = struct{}{}
+				ids = append(ids, id)
+			}
+			// CASE WHEN 子句之间不能有逗号：CASE id WHEN a THEN x WHEN b THEN y ELSE 0 END
+			*dst += fmt.Sprintf(" WHEN %d THEN %d", id, delta) // 前导空格：WHEN 之间必须用空格分隔
+		}
+	}
+	appendCase(like, &likeCase)
+	appendCase(favorite, &favCase)
+	appendCase(comment, &comCase)
+
+	if likeCase == "" && favCase == "" && comCase == "" {
+		return nil
+	}
+
+	updates := make([]string, 0, 3)
+	if likeCase != "" {
+		updates = append(updates, "like_count = like_count + CASE id "+likeCase+" ELSE 0 END")
+	}
+	if favCase != "" {
+		updates = append(updates, "favorite_count = favorite_count + CASE id "+favCase+" ELSE 0 END")
+	}
+	if comCase != "" {
+		// 评论数不允许减到负数（GREATEST 兜底，与旧逻辑一致）
+		updates = append(updates, "comment_count = GREATEST(comment_count + CASE id "+comCase+" ELSE 0 END, 0)")
+	}
+
+	sql := "UPDATE notes SET " + strings.Join(updates, ", ") + " WHERE id IN ?"
+	return r.db.WithContext(ctx).Exec(sql, ids).Error
 }

@@ -96,10 +96,7 @@ func (s *FeedService) ListForYou(ctx context.Context, cursorStr string, limit in
 	for i, it := range page {
 		ids[i] = it.ID
 	}
-	notes, err := s.repo.GetByIDs(ctx, ids)
-	if err != nil {
-		return nil, err
-	}
+	notes := s.getNotesByIDs(ctx, ids)
 	byID := make(map[int64]*model.Note, len(notes))
 	for _, n := range notes {
 		byID[n.ID] = n
@@ -154,20 +151,47 @@ func (s *FeedService) ListTopic(ctx context.Context, topicID int64, cursorStr st
 // 基础分游标会永久跳过"基础分靠前但个性化排后"的笔记（漏内容）。
 // 当前站点规模小（百级笔记），全量取 ZSET 再排序成本极低，换来不重不漏。
 func (s *FeedService) getFeedPage(ctx context.Context, userID int64, cursorScore float64, cursorID int64, limit int) ([]scoredFeedItem, int64, error) {
-	key := cache.FeedEngineKey(0)
-	if err := s.ensureFeedEngine(ctx, key); err != nil {
-		return nil, 0, err
-	}
-
 	start := int64(0)
 	if cursorID == 0 && cursorScore > 0 {
 		start = int64(cursorScore)
+	}
+
+	// 排名缓存命中：直接按位置切片，跳过全量 ZSET / 画像 / 排序 / 多样性
+	// 每用户每 10s 才重建一次，翻页深度 = 池大小（不再被 50 截断）
+	rankKey := cache.FeedUserRankKey(userID)
+	if zs, err := s.cache.ZRangeByScore(ctx, rankKey, "0", "+inf", 0, -1); err == nil && len(zs) > 0 {
+		page := make([]scoredFeedItem, 0, len(zs))
+		for _, z := range zs {
+			member, ok := z.Member.(string)
+			if !ok {
+				continue
+			}
+			id, err := strconv.ParseInt(member, 10, 64)
+			if err != nil {
+				continue
+			}
+			page = append(page, scoredFeedItem{ID: id})
+		}
+		if start >= int64(len(page)) {
+			return []scoredFeedItem{}, start, nil
+		}
+		end := start + int64(limit)
+		if end > int64(len(page)) {
+			end = int64(len(page))
+		}
+		return page[start:end], start, nil
+	}
+
+	key := cache.FeedEngineKey(0)
+	if err := s.ensureFeedEngine(ctx, key); err != nil {
+		return nil, 0, err
 	}
 
 	// 读时个性化参数
 	var followingSet map[int64]bool
 	var typePref map[int8]float64
 	hiddenSet := map[int64]struct{}{}
+	hideCounts := map[int8]int64{}
 	followedTopics := map[int64]bool{}
 	if userID > 0 {
 		if ids, err := s.getFollowingIDs(ctx, userID); err == nil {
@@ -176,23 +200,13 @@ func (s *FeedService) getFeedPage(ctx context.Context, userID int64, cursorScore
 				followingSet[id] = true
 			}
 		}
-		if ids, err := s.repo.GetFollowedTopicIDs(ctx, userID); err == nil {
-			for _, id := range ids {
-				followedTopics[id] = true
-			}
+
+		for _, id := range s.getFollowedTopicIDs(ctx, userID) {
+			followedTopics[id] = true
 		}
-		typePref, _ = s.repo.GetUserTypePreference(ctx, userID)
-		hiddenIDs, err := s.repo.GetHiddenNoteIDs(ctx, userID)
-		if err != nil {
-			logger.Sugar.Warnf("get hidden note ids err: %v", err)
-		}
-		for _, id := range hiddenIDs {
-			hiddenSet[id] = struct{}{}
-		}
-		hideCounts, err := s.repo.CountHidesByType(ctx, userID)
-		if err != nil {
-			logger.Sugar.Warnf("count hides by type err: %v", err)
-		}
+
+		typePref = s.getTypePref(ctx, userID)
+		hiddenSet, hideCounts = s.getHiddenData(ctx, userID)
 		for t, c := range hideCounts {
 			if typePref == nil {
 				typePref = map[int8]float64{}
@@ -205,8 +219,12 @@ func (s *FeedService) getFeedPage(ctx context.Context, userID int64, cursorScore
 		}
 	}
 
-	// 全量候选：按基础分倒序取全部
-	zs, err := s.cache.ZRevRangeByScore(ctx, key, "+inf", "-inf", 0, -1)
+	// 候选：按基础分倒序只取全局 Top N
+	limitCount := int64(-1)
+	if FeedCandidateLimit > 0 {
+		limitCount = int64(FeedCandidateLimit)
+	}
+	zs, err := s.cache.ZRevRangeByScore(ctx, key, "+inf", "-inf", 0, limitCount)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -261,34 +279,26 @@ func (s *FeedService) getFeedPage(ctx context.Context, userID int64, cursorScore
 		candidates = filtered
 	}
 
-	// Candidate：候选池（当前全量；笔记量级上来后改成截断前 N 个，
-	// 并把分页从"位置偏移"切换成"分数游标"）
-	candidateLimit := FeedCandidateLimit
-	if candidateLimit > 0 && int64(len(candidates)) > int64(candidateLimit) {
-		candidates = candidates[:candidateLimit]
-	}
-
 	// 拉黑过滤：按作者去重后一次性查询（提前过滤，省得多样性阶段浪费位置）
-	blockedAuthors := make(map[int64]bool)
+	var blockedAuthors map[int64]bool
 	if userID > 0 && s.block != nil {
 		authorSet := make(map[int64]struct{}, len(candidates))
 		for _, it := range candidates {
+			if it.AuthorID == 0 {
+				continue
+			}
 			authorSet[it.AuthorID] = struct{}{}
 		}
+		authorIDs := make([]int64, 0, len(authorSet))
 		for aid := range authorSet {
-			if blocked, err := s.block.IsBlockedEitherWay(ctx, userID, aid); err == nil && blocked {
-				blockedAuthors[aid] = true
+			authorIDs = append(authorIDs, aid)
+		}
+		if blocked, err := s.block.FilterBlockedAuthors(ctx, userID, authorIDs); err == nil && len(blocked) > 0 {
+			blockedAuthors = make(map[int64]bool, len(blocked))
+			for _, id := range blocked {
+				blockedAuthors[id] = true
 			}
 		}
-	}
-	if len(blockedAuthors) > 0 {
-		filtered := candidates[:0]
-		for _, it := range candidates {
-			if !blockedAuthors[it.AuthorID] {
-				filtered = append(filtered, it)
-			}
-		}
-		candidates = filtered
 	}
 
 	// Rank：读时个性化排序（分数降序，同分 id 降序）
@@ -299,10 +309,20 @@ func (s *FeedService) getFeedPage(ctx context.Context, userID int64, cursorScore
 		return candidates[i].ID > candidates[j].ID
 	})
 
-	// Diversity：MMR 多样性重排（替代"每作者最多 2 条"硬截断；自己的笔记不限量）
+	// Diversity：对全量候选池做多样性重排（O(N log N)，不再截断）
 	params := DefaultDiversityParams()
 	params.SkipLimitAuthorID = userID
 	candidates = diverseRank(candidates, topicIDsByNote, typeByNote, params)
+
+	// 写回每用户排名缓存（score = 排名位置，10s TTL）
+	// Hide / Block / 关注变化会删除该 key，删除笔记由 GetByIDs 的 published 条件兜底
+	if len(candidates) > 0 {
+		scores := make(map[int64]int64, len(candidates))
+		for i, it := range candidates {
+			scores[it.ID] = int64(i)
+		}
+		_ = s.cache.ZAddFeed(ctx, cache.FeedUserRankKey(userID), scores, 10*time.Second)
+	}
 
 	// 位置分页（顺序稳定，不重不漏）
 	if start >= int64(len(candidates)) {
@@ -460,6 +480,24 @@ func (s *FeedService) getFollowingIDs(ctx context.Context, userID int64) ([]int6
 		_ = s.cache.Expire(ctx, key, 30*time.Minute)
 	}
 	return ids, nil
+}
+
+func (s *FeedService) getFollowedTopicIDs(ctx context.Context, userID int64) []int64 {
+	key := cache.FollowedTopicsKey(userID)
+	if s.cache != nil {
+		if ids, err := s.cache.SMembers(ctx, key); err == nil {
+			return ids
+		}
+	}
+	ids, err := s.repo.GetFollowedTopicIDs(ctx, userID)
+	if err != nil {
+		return nil
+	}
+	if s.cache != nil && len(ids) > 0 {
+		_ = s.cache.SAdd(ctx, key, ids...)
+		_ = s.cache.Expire(ctx, key, 30*time.Minute)
+	}
+	return ids
 }
 
 func (s *FeedService) batchGetUsers(ctx context.Context, ids []int64) []*model.User {
@@ -641,10 +679,41 @@ func (s *FeedService) StartRescorer(ctx context.Context, interval time.Duration)
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
+				_ = s.ReconcileFeedEngine(ctx)
 				_ = s.RescoreRecentNotes(ctx)
 			}
 		}
 	}()
+}
+
+// ReconcileFeedEngine 对账打分 ZSET 与 DB 已发布笔记数：
+// 明显不一致（说明 Redis 有脏成员或漏数据）时删除并懒重建。
+func (s *FeedService) ReconcileFeedEngine(ctx context.Context) error {
+	if s.cache == nil {
+		return nil
+	}
+	key := cache.FeedEngineKey(0)
+	zsN, err := s.cache.ZCard(ctx, key)
+	if err != nil {
+		return err
+	}
+	dbN, err := s.repo.CountPublished(ctx)
+	if err != nil {
+		return err
+	}
+	if dbN == 0 {
+		return nil
+	}
+	diff := zsN - dbN
+	if diff < 0 {
+		diff = -diff
+	}
+	if diff > 50 && diff > dbN/10 {
+		logger.Sugar.Warnf("feed engine mismatch zset=%d db=%d, rebuild", zsN, dbN)
+		_ = s.cache.Delete(ctx, key)
+		return s.ensureFeedEngine(ctx, key)
+	}
+	return nil
 }
 
 func (s *FeedService) Hide(ctx context.Context, userID int64, noteID int64) error {
@@ -658,6 +727,13 @@ func (s *FeedService) Hide(ctx context.Context, userID int64, noteID int64) erro
 	if err := s.repo.AddFeedHide(ctx, userID, noteID, notes[0].Type); err != nil {
 		return err
 	}
+	if s.cache != nil {
+		_ = s.cache.SAdd(ctx, cache.UserHiddenKey(userID), noteID)
+		_ = s.cache.Expire(ctx, cache.UserHiddenKey(userID), 30*time.Minute)
+		_ = s.cache.HIncrBy(ctx, cache.UserHideCountKey(userID),
+			strconv.FormatInt(int64(notes[0].Type), 10), 1)
+		_ = s.cache.Expire(ctx, cache.UserHideCountKey(userID), 30*time.Minute)
+	}
 	return s.cache.InvalidateFeedRawForUser(ctx, userID)
 }
 
@@ -665,5 +741,124 @@ func (s *FeedService) UndoHide(ctx context.Context, userID int64, noteID int64) 
 	if err := s.repo.RemoveFeedHide(ctx, userID, noteID); err != nil {
 		return err
 	}
+	if s.cache != nil {
+		_ = s.cache.SRem(ctx, cache.UserHiddenKey(userID), noteID)
+		_ = s.cache.Delete(ctx, cache.UserHideCountKey(userID))
+	}
 	return s.cache.InvalidateFeedRawForUser(ctx, userID)
+}
+
+func (s *FeedService) getTypePref(ctx context.Context, userID int64) map[int8]float64 {
+	key := cache.UserTypePrefKey(userID)
+	if s.cache != nil {
+		var pref map[int8]float64
+		if err := s.cache.GetJSON(ctx, key, &pref); err == nil {
+			return pref
+		}
+	}
+	pref, err := s.repo.GetUserTypePreference(ctx, userID)
+	if err != nil || len(pref) == 0 {
+		return nil
+	}
+	if s.cache != nil {
+		_ = s.cache.SetJSON(ctx, key, pref, 5*time.Minute)
+	}
+	return pref
+}
+
+// getHiddenData 隐藏笔记 ID 集合 + 分类型计数：优先 Redis，miss 回源并回填
+func (s *FeedService) getHiddenData(ctx context.Context, userID int64) (map[int64]struct{}, map[int8]int64) {
+	hiddenSet := map[int64]struct{}{}
+	hideCounts := map[int8]int64{}
+	if s.cache == nil {
+		ids, _ := s.repo.GetHiddenNoteIDs(ctx, userID)
+		for _, id := range ids {
+			hiddenSet[id] = struct{}{}
+		}
+		hideCounts, _ = s.repo.CountHidesByType(ctx, userID)
+		return hiddenSet, hideCounts
+	}
+
+	// 隐藏笔记集合
+	ids, err := s.cache.SMembers(ctx, cache.UserHiddenKey(userID))
+	if err != nil {
+		ids, _ = s.repo.GetHiddenNoteIDs(ctx, userID)
+		if len(ids) > 0 {
+			_ = s.cache.SAdd(ctx, cache.UserHiddenKey(userID), ids...)
+			_ = s.cache.Expire(ctx, cache.UserHiddenKey(userID), 30*time.Minute)
+		}
+	}
+	for _, id := range ids {
+		hiddenSet[id] = struct{}{}
+	}
+
+	// 分类型计数（Hash: type -> count）
+	raw, err := s.cache.HGetAll(ctx, cache.UserHideCountKey(userID))
+	if err != nil || len(raw) == 0 {
+		counts, _ := s.repo.CountHidesByType(ctx, userID)
+		for t, c := range counts {
+			hideCounts[t] = c
+			_ = s.cache.HIncrBy(ctx, cache.UserHideCountKey(userID),
+				strconv.FormatInt(int64(t), 10), c)
+		}
+		if len(counts) > 0 {
+			_ = s.cache.Expire(ctx, cache.UserHideCountKey(userID), 30*time.Minute)
+		}
+	} else {
+		for t, c := range raw {
+			tv, err1 := strconv.ParseInt(t, 10, 64)
+			n, err2 := strconv.ParseInt(c, 10, 64)
+			if err1 == nil && err2 == nil {
+				hideCounts[int8(tv)] = n
+			}
+		}
+	}
+	return hiddenSet, hideCounts
+}
+
+func (s *FeedService) getNotesByIDs(ctx context.Context, ids []int64) []*model.Note {
+	if len(ids) == 0 {
+		return nil
+	}
+	result := make([]*model.Note, 0, len(ids))
+	missIDs := make([]int64, 0, len(ids))
+	if s.cache != nil {
+		keys := make([]string, len(ids))
+		for i, id := range ids {
+			keys[i] = cache.FeedNoteKey(id)
+		}
+		vals, err := s.cache.MGet(ctx, keys...)
+		if err == nil {
+			for i, val := range vals {
+				if val == "" {
+					missIDs = append(missIDs, ids[i])
+					continue
+				}
+				var n model.Note
+				if json.Unmarshal([]byte(val), &n) == nil {
+					result = append(result, &n)
+				} else {
+					missIDs = append(missIDs, ids[i])
+				}
+			}
+		} else {
+			missIDs = ids
+		}
+	} else {
+		missIDs = ids
+	}
+	if len(missIDs) > 0 {
+		dbNotes, err := s.repo.GetByIDs(ctx, missIDs)
+		if err != nil {
+			logger.Sugar.Errorf("getNotesByIDs db err: %v", err)
+		} else {
+			for _, n := range dbNotes {
+				result = append(result, n)
+				if s.cache != nil {
+					_ = s.cache.SetJSON(ctx, cache.FeedNoteKey(n.ID), n, 10*time.Minute)
+				}
+			}
+		}
+	}
+	return result
 }

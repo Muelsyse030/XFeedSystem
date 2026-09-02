@@ -26,7 +26,7 @@ func (r *GormStatsRepo) AddCounters(ctx context.Context, noteID int64, impressio
 		Columns: []clause.Column{{Name: "note_id"}},
 		DoUpdates: clause.Assignments(map[string]interface{}{
 			"impressions": gorm.Expr("impressions + ?", impressions),
-			"reads":       gorm.Expr("reads + ?", reads),
+			"reads":       gorm.Expr("`reads` + ?", reads),
 		}),
 	}).Create(&model.NoteStats{NoteID: noteID, Impressions: impressions, Reads: reads}).Error
 }

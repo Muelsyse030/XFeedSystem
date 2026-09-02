@@ -48,9 +48,8 @@ func (r *Repo) EnqueueTx(ctx context.Context, tx *gorm.DB, typ string, p events.
 	if err := tx.WithContext(ctx).Create(&evt).Error; err != nil {
 		return err
 	}
-	p.EventID = evt.ID
-	raw, _ = json.Marshal(p)
-	return tx.WithContext(ctx).Model(&evt).Update("payload", string(raw)).Error
+
+	return nil
 }
 
 // Claim 领取一批待发布事件。SKIP LOCKED 保证多个 relay 实例并发领取互不冲突
@@ -105,21 +104,61 @@ func (r *Relay) Run(ctx context.Context) error {
 			logger.Sugar.Errorf("outbox claim error %v", err)
 			continue
 		}
-		for _, evt := range evts {
+		if len(evts) == 0 {
+			continue
+		}
+
+		pub := make([]queue.PublishEvent, 0, len(evts))
+		ok := make([]bool, len(evts))
+		for i, evt := range evts {
 			var p events.Payload
 			if err := json.Unmarshal([]byte(evt.Payload), &p); err != nil {
 				logger.Sugar.Errorf("outbox event %d payload broken: %v", evt.ID, err)
-				_ = r.repo.MarkPublished(ctx, evt.ID)
+				_ = r.repo.MarkPublished(ctx, evt.ID) // 坏消息直接丢弃
 				continue
 			}
 			p.EventID = evt.ID
-			if err := r.bus.Publish(ctx, evt.EventType, p); err != nil {
-				_ = r.repo.MarkAttempt(ctx, evt.ID)
-				continue
-			}
-			if err := r.repo.MarkPublished(ctx, evt.ID); err != nil {
+			pub = append(pub, queue.PublishEvent{Type: evt.EventType, Payload: p})
+			ok[i] = true
+		}
+		if len(pub) > 0 {
+			if err := r.bus.PublishBatch(ctx, pub); err != nil {
+				// 发布失败：整批重试（attempts+1）
+				attemptIDs := make([]int64, 0, len(evts))
+				for i, evt := range evts {
+					if ok[i] {
+						attemptIDs = append(attemptIDs, evt.ID)
+					}
+				}
+				_ = r.repo.MarkAttemptBatch(ctx, attemptIDs)
 				continue
 			}
 		}
+		publishedIDs := make([]int64, 0, len(evts))
+		for i, evt := range evts {
+			if ok[i] {
+				publishedIDs = append(publishedIDs, evt.ID)
+			}
+		}
+		_ = r.repo.MarkPublishedBatch(ctx, publishedIDs)
 	}
+}
+
+func (r *Repo) MarkPublishedBatch(ctx context.Context, ids []int64) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	return r.db.WithContext(ctx).Model(&Event{}).
+		Where("id IN ?", ids).
+		Updates(map[string]interface{}{"status": 1, "published_at": time.Now()}).Error
+}
+
+// MarkAttemptBatch 一次 UPDATE 批量累加重试次数
+func (r *Repo) MarkAttemptBatch(ctx context.Context, ids []int64) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	return r.db.WithContext(ctx).Model(&Event{}).
+		Where("id IN ?", ids).
+		Update("attempts", gorm.Expr("attempts + 1")).Error
 }

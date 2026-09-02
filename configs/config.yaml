@@ -14,14 +14,14 @@ jwt:
   secret: "dev-secret-change-in-production"
   expire_hours: 72
 
-oss:
+cos:
   enable: true
-  endpoint: "oss-cn-beijing.aliyuncs.com"
-  bucket: "xfeedsystem"
-  # 生产环境通过 XFEED_OSS_ACCESS_KEY_ID / XFEED_OSS_ACCESS_KEY_SECRET 覆盖
-  access_key_id: ""
-  access_key_secret: ""
-  base_url: "https://xfeedsystem.oss-cn-beijing.aliyuncs.com"
+  region: "ap-shanghai"
+  bucket: "xfeed-1323046323"
+  # 生产环境通过 XFEED_COS_SECRET_ID / XFEED_COS_SECRET_KEY 覆盖
+  secret_id: ""
+  secret_key: ""
+  base_url: "https://xfeed-1323046323.cos.ap-shanghai.myqcloud.com"
 
 meilisearch:
   host: "http://127.0.0.1:7700"
@@ -36,3 +36,14 @@ worker:
   relay_enabled: true
   batch: 100
   poll_interval_ms: 200
+
+event:
+  relay:
+    batch_size: 500
+    interval_ms: 100
+  consumer:
+    batch_size: 64
+    block_ms: 100
+  counter:
+    flush_interval_ms: 2000
+    flush_batch_size: 500

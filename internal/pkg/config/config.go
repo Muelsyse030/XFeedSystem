@@ -25,14 +25,14 @@ type Config struct {
 		Secret         string `mapstructure:"secret"`
 		ExpireDuration int    `mapstructure:"expire_hours"`
 	} `mapstructure:"jwt"`
-	OSS struct {
-		Enable          bool   `mapstructure:"enable"`
-		Endpoint        string `mapstructure:"endpoint"`
-		Bucket          string `mapstructure:"bucket"`
-		AccessKeyID     string `mapstructure:"access_key_id"`
-		AccessKeySecret string `mapstructure:"access_key_secret"`
-		BaseURL         string `mapstructure:"base_url"`
-	} `mapstructure:"oss"`
+	COS struct {
+		Enable    bool   `mapstructure:"enable"`
+		Region    string `mapstructure:"region"`
+		Bucket    string `mapstructure:"bucket"`
+		SecretID  string `mapstructure:"secret_id"`
+		SecretKey string `mapstructure:"secret_key"`
+		BaseURL   string `mapstructure:"base_url"`
+	} `mapstructure:"cos"`
 	Meilisearch struct {
 		Host   string `mapstructure:"host"`
 		APIKey string `mapstructure:"api_key"`
@@ -47,6 +47,20 @@ type Config struct {
 		Batch          int  `mapstructure:"batch"`
 		PollIntervalMs int  `mapstructure:"poll_interval_ms"`
 	} `mapstructure:"worker"`
+	Event struct {
+		Relay struct {
+			BatchSize  int `mapstructure:"batch_size"`
+			IntervalMs int `mapstructure:"interval_ms"`
+		} `mapstructure:"relay"`
+		Consumer struct {
+			BatchSize int `mapstructure:"batch_size"`
+			BlockMs   int `mapstructure:"block_ms"`
+		} `mapstructure:"consumer"`
+		Counter struct {
+			FlushIntervalMs int `mapstructure:"flush_interval_ms"`
+			FlushBatchSize  int `mapstructure:"flush_batch_size"`
+		} `mapstructure:"counter"`
+	} `mapstructure:"event"`
 }
 
 func LoadConfig() (*Config, error) {
@@ -65,8 +79,12 @@ func LoadConfig() (*Config, error) {
 	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	viper.AutomaticEnv()
 
-	viper.BindEnv("oss.access_key_id")
-	viper.BindEnv("oss.access_key_secret")
+	viper.BindEnv("cos.enable")
+	viper.BindEnv("cos.region")
+	viper.BindEnv("cos.bucket")
+	viper.BindEnv("cos.secret_id")
+	viper.BindEnv("cos.secret_key")
+	viper.BindEnv("cos.base_url")
 	viper.BindEnv("jwt.secret")
 	viper.BindEnv("server.port")
 	viper.BindEnv("mysql.dsn")
@@ -84,18 +102,37 @@ func LoadConfig() (*Config, error) {
 		return nil, err
 	}
 
-	// 从 .env 文件只读取 OSS 密钥（不影响其他任何配置）
+	// 从 .env 文件只读取 COS 密钥（不影响其他任何配置）
 	envMap := loadEnvFile(configPath)
-	if ak, ok := envMap["XFEED_OSS_ACCESS_KEY_ID"]; ok && ak != "" {
-		viper.Set("oss.access_key_id", ak)
+	if ak, ok := envMap["XFEED_COS_SECRET_ID"]; ok && ak != "" {
+		viper.Set("cos.secret_id", ak)
 	}
-	if sk, ok := envMap["XFEED_OSS_ACCESS_KEY_SECRET"]; ok && sk != "" {
-		viper.Set("oss.access_key_secret", sk)
+	if sk, ok := envMap["XFEED_COS_SECRET_KEY"]; ok && sk != "" {
+		viper.Set("cos.secret_key", sk)
 	}
 
 	var config Config
 	if err := viper.Unmarshal(&config); err != nil {
 		return nil, err
+	}
+
+	if config.Event.Relay.BatchSize <= 0 {
+		config.Event.Relay.BatchSize = 500
+	}
+	if config.Event.Relay.IntervalMs <= 0 {
+		config.Event.Relay.IntervalMs = 100
+	}
+	if config.Event.Consumer.BatchSize <= 0 {
+		config.Event.Consumer.BatchSize = 64
+	}
+	if config.Event.Consumer.BlockMs <= 0 {
+		config.Event.Consumer.BlockMs = 100
+	}
+	if config.Event.Counter.FlushIntervalMs <= 0 {
+		config.Event.Counter.FlushIntervalMs = 2000
+	}
+	if config.Event.Counter.FlushBatchSize <= 0 {
+		config.Event.Counter.FlushBatchSize = 500
 	}
 	return &config, nil
 }

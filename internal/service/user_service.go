@@ -2,9 +2,7 @@ package service
 
 import (
 	"XFeedSystem/internal/cache"
-	"XFeedSystem/internal/events"
 	"XFeedSystem/internal/model"
-	"XFeedSystem/internal/outbox"
 	"XFeedSystem/internal/repo"
 	"context"
 	"errors"
@@ -21,10 +19,9 @@ var ErrBlockedByTarget = errors.New("无法关注：你已拉黑对方或被对�
 const userCacheTTL = 1 * time.Hour
 
 type UserService struct {
-	repo   repo.UserRepo
-	cache  *cache.RedisCache
-	block  *BlockService
-	outbox *outbox.Repo
+	repo  repo.UserRepo
+	cache *cache.RedisCache
+	block *BlockService
 }
 
 type FollowUserItem struct {
@@ -56,8 +53,8 @@ type FollowListResponse struct {
 	NextCursor string            `json:"next_cursor"`
 }
 
-func NewUserService(r repo.UserRepo, c *cache.RedisCache, b *BlockService, outbox *outbox.Repo) *UserService {
-	return &UserService{repo: r, cache: c, block: b, outbox: outbox}
+func NewUserService(r repo.UserRepo, c *cache.RedisCache, b *BlockService) *UserService {
+	return &UserService{repo: r, cache: c, block: b}
 }
 
 func (s *UserService) Register(username, password, confirmPassword string) error {
@@ -131,17 +128,14 @@ func (s *UserService) Follow(ctx context.Context, userID int64, followID int64) 
 			return ErrBlockedByTarget
 		}
 	}
-	if _, err := s.repo.Followbyid(ctx, userID, followID); err != nil {
+	created, err := s.repo.Followbyid(ctx, userID, followID)
+	if err != nil {
 		return errors.New("关注失败")
 	}
-	if s.cache != nil {
+	if created && s.cache != nil {
 		key := cache.FollowingIDsKey(userID)
-		_ = s.cache.SAdd(ctx, key, followID) // 关注集合是用户私有缓存，API 直接维护没问题
+		_ = s.cache.SAdd(ctx, key, followID) // 只有真的新增关注才更新缓存
 	}
-	_ = s.outbox.Enqueue(context.Background(), events.UserFollowed, events.Payload{
-		AuthorID: followID, // 通知接收方
-		ActorID:  userID,   // 关注者
-	})
 	return nil
 }
 func (s *UserService) Unfollow(ctx context.Context, userID int64, followID int64) error {

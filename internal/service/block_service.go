@@ -34,10 +34,11 @@ func (s *BlockService) Block(ctx context.Context, userID, blockedID int64) error
 	// 拉黑时自动双向取消关注
 	_ = s.userRepo.Delete(ctx, userID, blockedID)
 	_ = s.userRepo.Delete(ctx, blockedID, userID)
-		if s.cache != nil {
+	if s.cache != nil {
 		_ = s.cache.SRem(ctx, cache.FollowingIDsKey(userID), blockedID)
 		_ = s.cache.SRem(ctx, cache.FollowingIDsKey(blockedID), userID)
 		_ = s.cache.SAdd(ctx, cache.BlockedIDsKey(userID), blockedID)
+		_ = s.cache.Set(ctx, cache.BlockedFlagKey(userID), "1", 30*time.Minute)
 		safeGo(func() {
 			_ = s.cache.InvalidateFeedEngineForUser(context.Background(), userID)
 			_ = s.cache.InvalidateFeedEngineForUser(context.Background(), blockedID)
@@ -54,6 +55,7 @@ func (s *BlockService) Unblock(ctx context.Context, userID, blockedID int64) err
 	}
 	if s.cache != nil {
 		_ = s.cache.SRem(ctx, cache.BlockedIDsKey(userID), blockedID)
+		_ = s.cache.Set(ctx, cache.BlockedFlagKey(userID), "1", 30*time.Minute)
 		safeGo(func() {
 			_ = s.cache.InvalidateFeedEngineForUser(context.Background(), userID)
 			_ = s.cache.InvalidateFeedEngineForUser(context.Background(), blockedID)
@@ -66,23 +68,33 @@ func (s *BlockService) Unblock(ctx context.Context, userID, blockedID int64) err
 
 func (s *BlockService) GetBlockedIDs(ctx context.Context, userID int64) ([]int64, error) {
 	key := cache.BlockedIDsKey(userID)
+	flagKey := cache.BlockedFlagKey(userID)
 	if s.cache != nil {
-		ids, err := s.cache.SMembers(ctx, key)
-		if err == nil && len(ids) > 0 {
-			return ids, nil
+		// 只有 flag 存在才走缓存（空集合也缓存，避免无拉黑用户每次都回源 DB）
+		if ok, _ := s.cache.Exists(ctx, flagKey); ok {
+			ids, err := s.cache.SMembers(ctx, key)
+			if err == nil {
+				return ids, nil
+			}
 		}
 	}
 	ids, err := s.repo.GetBlockedIDs(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
-	if s.cache != nil && len(ids) > 0 {
-		_ = s.cache.SAdd(ctx, key, ids...)
-		_ = s.cache.Expire(ctx, key, 30*time.Minute)
+	if s.cache != nil {
+		if len(ids) > 0 {
+			_ = s.cache.SAdd(ctx, key, ids...)
+		}
+		_ = s.cache.Set(ctx, flagKey, "1", 30*time.Minute)
 	}
 	return ids, nil
 }
 
 func (s *BlockService) IsBlockedEitherWay(ctx context.Context, a, b int64) (bool, error) {
 	return s.repo.IsBlockedEitherWay(ctx, a, b)
+}
+
+func (s *BlockService) FilterBlockedAuthors(ctx context.Context, userID int64, authorIDs []int64) ([]int64, error) {
+	return s.repo.FilterBlockedAuthors(ctx, userID, authorIDs)
 }
