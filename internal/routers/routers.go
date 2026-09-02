@@ -26,7 +26,9 @@ func SetupRouter(db *gorm.DB, appCfg config.Config) *gin.Engine {
 	if os.Getenv("ENABLE_PPROF") == "1" {
 		registerPprof(r)
 	}
-	r.Use(middleware.LoggerMiddleware())
+	if os.Getenv("XFEED_REQUEST_LOG") != "0" {
+		r.Use(middleware.LoggerMiddleware())
+	}
 	redisCache := cache.NewRedisCache(appCfg.Redis.Addr, appCfg.Redis.Password, appCfg.Redis.DB)
 	searchRepo := repo.NewSearchRepo(appCfg.Meilisearch.Host, appCfg.Meilisearch.APIKey, appCfg.Meilisearch.Index)
 	if err := searchRepo.EnsureIndex(context.Background()); err != nil {

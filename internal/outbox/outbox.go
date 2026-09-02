@@ -48,9 +48,8 @@ func (r *Repo) EnqueueTx(ctx context.Context, tx *gorm.DB, typ string, p events.
 	if err := tx.WithContext(ctx).Create(&evt).Error; err != nil {
 		return err
 	}
-	p.EventID = evt.ID
-	raw, _ = json.Marshal(p)
-	return tx.WithContext(ctx).Model(&evt).Update("payload", string(raw)).Error
+
+	return nil
 }
 
 // Claim 领取一批待发布事件。SKIP LOCKED 保证多个 relay 实例并发领取互不冲突
