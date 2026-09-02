@@ -219,7 +219,7 @@ func (s *NoteService) Unlike(ctx context.Context, noteID, userID int64) (bool, e
 	if userID <= 0 {
 		return false, ErrInvalidUserID
 	}
-	note, err := s.repo.GetByID(ctx, noteID)
+	note, err := s.GetByID(ctx, noteID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return false, ErrNoteNotFound
@@ -260,7 +260,7 @@ func (s *NoteService) Unfavorite(ctx context.Context, noteID, userID int64) (boo
 	if userID <= 0 {
 		return false, ErrInvalidUserID
 	}
-	note, err := s.repo.GetByID(ctx, noteID)
+	note, err := s.GetByID(ctx, noteID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return false, ErrNoteNotFound
@@ -395,7 +395,7 @@ func (s *NoteService) Updata(ctx context.Context, noteID, authorID int64, title,
 			images = []string{cover}
 		}
 	}
-	if old, err := s.repo.GetByID(ctx, noteID); err == nil && old.AuthorID == authorID {
+	if old, err := s.GetByID(ctx, noteID); err == nil && old.AuthorID == authorID {
 		_ = s.repo.InsertNoteVersion(ctx, &model.NoteVersion{
 			NoteID:        old.ID,
 			AuthorID:      old.AuthorID,
@@ -449,14 +449,31 @@ func (s *NoteService) checkBlocked(ctx context.Context, currentUserID, targetUse
 	if s.block == nil {
 		return nil
 	}
-	blocked, err := s.block.IsBlockedEitherWay(ctx, currentUserID, targetUserID)
+	// 双向拉黑判断：走缓存的 blocked 集合（Redis 30min），不再每请求查库
+	blocked, err := s.block.GetBlockedIDs(ctx, currentUserID)
 	if err != nil {
 		return err
 	}
-	if blocked {
+	if containsID(blocked, targetUserID) {
+		return ErrBlocked
+	}
+	blocked, err = s.block.GetBlockedIDs(ctx, targetUserID)
+	if err != nil {
+		return err
+	}
+	if containsID(blocked, currentUserID) {
 		return ErrBlocked
 	}
 	return nil
+}
+
+func containsID(ids []int64, id int64) bool {
+	for _, v := range ids {
+		if v == id {
+			return true
+		}
+	}
+	return false
 }
 
 // 版本列表（只返回 id + 时间，不返回正文，省流量）
@@ -476,7 +493,7 @@ func (s *NoteService) RestoreVersion(ctx context.Context, noteID, authorID, vers
 	}
 
 	// 快照当前状态，保持历史连续
-	if current, err := s.repo.GetByID(ctx, noteID); err == nil {
+	if current, err := s.GetByID(ctx, noteID); err == nil {
 		_ = s.repo.InsertNoteVersion(ctx, &model.NoteVersion{
 			NoteID: current.ID, AuthorID: current.AuthorID,
 			Title: current.Title, Content: current.Content, Images: current.Images,

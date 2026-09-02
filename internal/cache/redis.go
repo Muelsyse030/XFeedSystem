@@ -479,6 +479,11 @@ func BlockedIDsKey(userID int64) string {
 	return fmt.Sprintf("block:blocked:%d", userID)
 }
 
+// BlockedFlagKey 标记某用户 blocked 集合是否已缓存（空集合也缓存，避免无拉黑用户反复回源）
+func BlockedFlagKey(userID int64) string {
+	return fmt.Sprintf("block:blockedflag:%d", userID)
+}
+
 func FeedForYouKeyV2(userID int64, limit int) string {
 	return fmt.Sprintf("feed:foryou:%d:%d", userID, limit)
 }
