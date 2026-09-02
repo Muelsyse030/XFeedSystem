@@ -38,6 +38,15 @@ type Config struct {
 		APIKey string `mapstructure:"api_key"`
 		Index  string `mapstructure:"index"`
 	} `mapstructure:"meilisearch"`
+	Streams struct {
+		Key   string `mapstructure:"key"`
+		Group string `mapstructure:"group"`
+	} `mapstructure:"streams"` // 组名固定写在 events 包，这里只需 key
+	Worker struct {
+		RelayEnabled   bool `mapstructure:"relay_enabled"`
+		Batch          int  `mapstructure:"batch"`
+		PollIntervalMs int  `mapstructure:"poll_interval_ms"`
+	} `mapstructure:"worker"`
 }
 
 func LoadConfig() (*Config, error) {
@@ -59,6 +68,17 @@ func LoadConfig() (*Config, error) {
 	viper.BindEnv("oss.access_key_id")
 	viper.BindEnv("oss.access_key_secret")
 	viper.BindEnv("jwt.secret")
+	viper.BindEnv("server.port")
+	viper.BindEnv("mysql.dsn")
+	viper.BindEnv("redis.addr")
+	viper.BindEnv("redis.password")
+	viper.BindEnv("meilisearch.host")
+	viper.BindEnv("meilisearch.api_key")
+	viper.BindEnv("meilisearch.index")
+	viper.BindEnv("streams.key")
+	viper.BindEnv("worker.relay_enabled")
+	viper.BindEnv("worker.batch")
+	viper.BindEnv("worker.poll_interval_ms")
 
 	if err := viper.ReadInConfig(); err != nil {
 		return nil, err

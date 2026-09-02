@@ -2,7 +2,9 @@ package service
 
 import (
 	"XFeedSystem/internal/cache"
+	"XFeedSystem/internal/events"
 	"XFeedSystem/internal/model"
+	"XFeedSystem/internal/outbox"
 	"XFeedSystem/internal/repo"
 	"context"
 	"errors"
@@ -19,10 +21,10 @@ var ErrBlockedByTarget = errors.New("无法关注：你已拉黑对方或被对�
 const userCacheTTL = 1 * time.Hour
 
 type UserService struct {
-	repo     repo.UserRepo
-	cache    *cache.RedisCache
-	notifSvc *NotificationService
-	block    *BlockService
+	repo   repo.UserRepo
+	cache  *cache.RedisCache
+	block  *BlockService
+	outbox *outbox.Repo
 }
 
 type FollowUserItem struct {
@@ -54,8 +56,8 @@ type FollowListResponse struct {
 	NextCursor string            `json:"next_cursor"`
 }
 
-func NewUserService(r repo.UserRepo, c *cache.RedisCache, ns *NotificationService, b *BlockService) *UserService {
-	return &UserService{repo: r, cache: c, notifSvc: ns, block: b}
+func NewUserService(r repo.UserRepo, c *cache.RedisCache, b *BlockService, outbox *outbox.Repo) *UserService {
+	return &UserService{repo: r, cache: c, block: b, outbox: outbox}
 }
 
 func (s *UserService) Register(username, password, confirmPassword string) error {
@@ -129,23 +131,17 @@ func (s *UserService) Follow(ctx context.Context, userID int64, followID int64) 
 			return ErrBlockedByTarget
 		}
 	}
-	if err := s.repo.Followbyid(ctx, userID, followID); err != nil {
+	if _, err := s.repo.Followbyid(ctx, userID, followID); err != nil {
 		return errors.New("关注失败")
 	}
 	if s.cache != nil {
 		key := cache.FollowingIDsKey(userID)
-		_ = s.cache.SAdd(ctx, key, followID)
-		safeGo(func() {
-			_ = s.cache.InvalidateFeedEngineForUser(context.Background(), userID)
-			_ = s.cache.InvalidateFeedRawForUser(context.Background(), userID)
-		})
+		_ = s.cache.SAdd(ctx, key, followID) // 关注集合是用户私有缓存，API 直接维护没问题
 	}
-	if s.notifSvc != nil {
-		safeGo(func() {
-			s.notifSvc.Create(context.Background(), userID, followID,
-				model.NotifTypeFollow, userID, 0, "关注了你")
-		})
-	}
+	_ = s.outbox.Enqueue(context.Background(), events.UserFollowed, events.Payload{
+		AuthorID: followID, // 通知接收方
+		ActorID:  userID,   // 关注者
+	})
 	return nil
 }
 func (s *UserService) Unfollow(ctx context.Context, userID int64, followID int64) error {
@@ -161,10 +157,8 @@ func (s *UserService) Unfollow(ctx context.Context, userID int64, followID int64
 	if s.cache != nil {
 		key := cache.FollowingIDsKey(userID)
 		_ = s.cache.SRem(ctx, key, followID)
-		safeGo(func() {
-			_ = s.cache.InvalidateFeedEngineForUser(context.Background(), userID)
-			_ = s.cache.InvalidateFeedRawForUser(context.Background(), userID)
-		})
+		// 关注集合变了 → 该用户已缓存的个性化 feed 页立即失效（用户私有缓存，多实例安全）
+		_ = s.cache.InvalidateFeedRawForUser(ctx, userID)
 	}
 	return nil
 }

@@ -1,6 +1,7 @@
 package configs
 
 import (
+	"XFeedSystem/internal/outbox"
 	"time"
 
 	"XFeedSystem/internal/model"
@@ -33,6 +34,7 @@ func InitDB(dsn string) *gorm.DB {
 		&model.Topic{},
 		&model.NoteTopic{},
 		&model.NoteStats{},
+		&outbox.Event{},
 	); err != nil {
 		panic("自动迁移失败: " + err.Error())
 	}

@@ -5,10 +5,11 @@ import (
 	"context"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type NotificationRepo interface {
-	Create(ctx context.Context, notif *model.Notification) error
+	Create(ctx context.Context, notif *model.Notification) (bool, error)
 	ListByUser(ctx context.Context, userID int64, cursor int64, limit int) ([]*model.Notification, error)
 	MarkRead(ctx context.Context, id int64, userID int64) error
 	MarkAllRead(ctx context.Context, userID int64) error
@@ -23,8 +24,14 @@ func NewGormNotificationRepo(db *gorm.DB) *GormNotificationRepo {
 	return &GormNotificationRepo{db: db}
 }
 
-func (r *GormNotificationRepo) Create(ctx context.Context, notif *model.Notification) error {
-	return r.db.WithContext(ctx).Create(notif).Error
+func (r *GormNotificationRepo) Create(ctx context.Context, notif *model.Notification) (bool, error) {
+	res := r.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "event_id"}, {Name: "user_id"}}, DoNothing: true,
+	}).Create(notif)
+	if res.Error != nil {
+		return false, res.Error
+	}
+	return res.RowsAffected > 0, nil
 }
 
 func (r *GormNotificationRepo) ListByUser(ctx context.Context, userID int64, cursor int64, limit int) ([]*model.Notification, error) {

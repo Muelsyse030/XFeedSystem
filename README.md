@@ -1,6 +1,6 @@
 # XFeedSystem
 
-发现型内容社区后端 API。基于 Go + Gin，自带 **Feed 打分引擎**（Redis ZSET）、全文搜索（Meilisearch），支持笔记（富文本/视频）、关注/点赞/评论/收藏、通知、拉黑、Feed 不感兴趣、站内信、举报与管理员后台，前端为 React SPA（`xfeed-discover-page-source`）。
+发现型内容社区后端 API。基于 Go + Gin，自带 **Feed 打分引擎**（Redis ZSET）、全文搜索（Meilisearch）与**事件驱动架构**（事务性 Outbox + Redis Streams + 独立 worker 进程），支持笔记（富文本/视频）、关注/点赞/评论/收藏、通知、拉黑、Feed 不感兴趣、站内信、举报与管理员后台，前端为 React SPA（`xfeed-discover-page-source`）。
 
 ## 技术栈
 
@@ -8,6 +8,7 @@
 |---|---|
 | API | Go 1.24 · Gin · GORM |
 | 存储 | MySQL 8（Docker）· Redis 7（Docker） |
+| 事件 | 事务性 Outbox（MySQL）· Redis Streams（三消费组） |
 | 搜索 | Meilisearch（Docker） |
 | 部署 | nginx（TLS/反代/keepalive）· systemd · Docker Compose |
 | 文件 | 阿里云 OSS |
@@ -23,19 +24,34 @@ graph LR
     A --> S[Meilisearch]
     A --> O[OSS]
     N --> D[前端 dist]
+    W[xfeed-worker] -->|轮询 outbox_events| M
+    W -->|Redis Streams 三消费组| R
+    W --> S
 ```
+
+## 核心设计：事件驱动（Outbox + Redis Streams）
+
+写请求在 API 进程完成业务写入，所有“副作用”（Feed 打分、搜索索引、通知）由独立 worker 进程异步消费事件完成：
+
+- **事务性 Outbox**：业务写入与事件在同一个 MySQL 事务里提交（`outbox_events` 表）；点赞/收藏/评论/关注/笔记增删改都会同事务写一条事件，不丢事件。
+- **Relay**：worker 周期领取待发布事件（`SKIP LOCKED` 防止多实例互抢），`XADD` 到 Redis Streams 后标记已发布；发布失败自动重试（`attempts` 计数）。
+- **消费组**：`xfeed:feed` / `xfeed:search` / `xfeed:notify` 三个消费组各自独立推进游标、互不拖累；`XReadGroup` 消费 + `XAutoClaim` 恢复 + `XAck` 确认。
+- **职责划分**：feed worker 维护打分 ZSET 并失效页缓存；search worker 回读 MySQL（真相源）同步 Meilisearch；notify worker 创建站内通知与 @提及。
+- **幂等**：notify 消费组用 `notify:dedup:{event_id}`（`SET NX`，保留 7 天）保证 at-least-once 投递下不重复通知。
+- **多实例安全**：计数器落库与打分周期重算收归 worker，API 多实例不会重复执行。
 
 ## 核心设计：Feed 引擎
 
-`foryou` feed 采用 **全局基础分 ZSET + 读时个性化 + 位置偏移分页**：
+`foryou` feed 采用 **全局基础分 ZSET + 读时个性化 + MMR 多样性 + 位置偏移分页**：
 
 - 全部已发布笔记在共享 ZSET（`feed:engine:v1:0`）中维护基础分，无候选池上限。
 - 基础分（`internal/service/feed_scorer.go`）：互动量（点赞×3 + 收藏×5 + 评论×4）× 时间衰减（24h 冻结）× 关注加权 × 类型偏好 + 新笔记保底热度（48h 内线性衰减，零互动也能进首页）+ CTR 加成（阅读/曝光）。
 - 分数折叠：`zsetScore = round(score×10000)×10⁶ + id`，ZSET 内无同分并列，`ZREVRANGEBYSCORE` 一条命令读全量候选。
-- 读时个性化：按当前用户的关注关系、关注话题与类型偏好重算每条笔记分数后排序，再依次做「不感兴趣」过滤、拉黑过滤、作者去重（每作者最多 2 条、自己不限量），最后按**位置偏移游标**分页——个性化排序与基础分顺序不一致时也不会漏内容。
+- 读时个性化：按当前用户的关注关系、关注话题与类型偏好重算每条笔记分数后排序，再做「不感兴趣」过滤与拉黑过滤。
+- 多样性（MMR）：对排序后的候选做贪心重排——已选作者的其余候选、与已选内容同话题/同类型的候选按惩罚系数衰减分数（自己的笔记不限量），替代原先“每作者最多 2 条”的硬截断。
+- 位置分页：多样性重排后按**位置偏移游标**分页，顺序稳定、不重不漏。
 - 不感兴趣：隐藏的笔记直接过滤出流；每次隐藏使该笔记类型的个性化权重降低 0.4（最低 -0.8，即乘数最低 0.2），连续对同一类型不感兴趣会显著下调该类型的展示权重，可随时撤销。
-- 懒重建：TTL 60s，重建时 singleflight 防惊群；每 5 分钟后台重算热门笔记。
-- 写操作同步维护：发布笔记 `ZADD` 单条、删除笔记 `ZREM` 即时移除；点赞/收藏/评论等会主动失效引擎与页缓存，TTL 兜底。
+- 事件驱动维护：feed worker 消费事件后增量 `ZADD` 重算单条分数、`ZREM` 移除已删笔记，再失效页字节缓存；ZSET 懒重建（TTL 60s）与每 5 分钟热门重算兜底。
 - 多级缓存：首页/翻页/详情/主页响应以**原始字节**缓存于 Redis（TTL 10-60s），命中时零序列化直接返回。
 
 > 当前全量候选 + 排序面向百级笔记规模；笔记量级再上一个台阶后，可改为增量维护的排序结构。
@@ -57,14 +73,18 @@ graph LR
 ## 目录结构
 
 ```
-cmd/api/           # 入口
+cmd/api/           # API 入口
+cmd/worker/        # worker 进程（outbox relay + feed/search/notify 消费组）
 configs/           # config.yaml + 数据库初始化
 internal/
   cache/           # Redis 封装（JSON/字节缓存、Feed 引擎 ZSET）
+  events/          # 事件契约（类型与 Payload）
   handler/         # Gin handlers（含原始字节缓存逻辑）
   middleware/      # JWT、管理员鉴权、慢请求/错误日志
   model/           # GORM 模型
+  outbox/          # 事务性 Outbox（事件写入 + relay）
   pkg/cursor/      # 游标编解码（分数游标 / 时间游标）
+  queue/           # Redis Streams 消费组
   repo/            # 数据访问层
   routers/         # 路由注册 + pprof 开关
   service/         # 业务逻辑（Feed 引擎、打分、站内信、举报等）
@@ -101,6 +121,7 @@ cp .env.example .env
 ```bash
 make run        # 本地直接运行（go run）
 make build      # 编译到 build/xfeed-api
+go run ./cmd/worker   # 事件 worker（outbox relay + 消费组）
 ```
 
 ## 部署
@@ -111,11 +132,14 @@ make deploy SERVER=user@host
 
 `make deploy` 会打包二进制 + 配置 + 迁移 + systemd 单元，上传后在服务器执行 `deploy/install.sh update` 并自动重启服务。
 
+> 事件 worker 需要单独部署运行：目前 `make deploy` 尚未打包 worker，可先手动编译 `go build -o build/xfeed-worker ./cmd/worker` 并配置 systemd 单元。
+
 生产服务器组件：
 
 | 组件 | 说明 |
 |---|---|
 | `xfeed-api.service` | systemd 托管 Go 服务，`/opt/xfeed/xfeed-api` |
+| `xfeed-worker` | 事件 worker（outbox relay + 三消费组），需单独部署 |
 | nginx | TLS 终止、`/api/` 反代到 :8000（upstream keepalive 64）、HTTP→HTTPS 301、HSTS/安全头 |
 | Docker | `feed_mysql`（3308→3306）、`feed_redis`（6380→6379）、`feed_meilisearch`（7700） |
 
@@ -202,7 +226,8 @@ go tool pprof -http=:8081 /tmp/cpu.pprof
 
 ### 缓存与引擎
 
-- 打分 ZSET：`feed:engine:v1:0`，TTL 60s 自动重建；发布/删除笔记即时 `ZADD`/`ZREM`，点赞/评论/收藏等写操作主动失效引擎与页缓存。
+- 打分 ZSET：`feed:engine:v1:0`，由 feed worker 消费事件增量维护（`ZADD`/`ZREM`），懒重建 TTL 60s 兜底。
+- 事件流：Redis Streams `xfeed:events`，消费组 `xfeed:feed` / `xfeed:search` / `xfeed:notify`；通知去重键 `notify:dedup:*`。
 - 响应字节缓存 key：`feed:foryou:raw:*`、`feed:page:raw:*`、`note:detail:raw:*`、`user:profile:raw:*`。
 
 ## 已知限制
@@ -210,3 +235,5 @@ go tool pprof -http=:8081 /tmp/cpu.pprof
 - `following` 关注流暂用 SQL 分页，未接入打分引擎。
 - 登录用户详情接口（含 is_liked/is_favorited）不走字节缓存。
 - Feed 全量候选排序针对当前百级笔记规模设计，规模增大后需要替换为增量排序结构。
+- `make deploy` 暂未打包 worker 与对应 systemd 单元，需要手动部署。
+- 事件发布失败仅靠轮询重试（`attempts` 计数），暂无死信队列与告警。

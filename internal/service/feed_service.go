@@ -26,6 +26,8 @@ type scoredFeedItem struct {
 	Score     float64
 	BaseScore float64
 	AuthorID  int64
+	Type      int8
+	Topics    []int64
 }
 
 var (
@@ -243,6 +245,8 @@ func (s *FeedService) getFeedPage(ctx context.Context, userID int64, cursorScore
 		}
 		it.Score = personalizedScore(it.Score, authorID, typeByNote[it.ID], followingSet, typePref, topicHit)
 		it.AuthorID = authorID
+		it.Type = typeByNote[it.ID]
+		it.Topics = topicIDsByNote[it.ID]
 	}
 
 	// 过滤被隐藏的笔记（就地过滤，不新增分配）
@@ -257,15 +261,14 @@ func (s *FeedService) getFeedPage(ctx context.Context, userID int64, cursorScore
 		candidates = filtered
 	}
 
-	// 个性化排序（分数降序，同分 id 降序）
-	sort.Slice(candidates, func(i, j int) bool {
-		if candidates[i].Score != candidates[j].Score {
-			return candidates[i].Score > candidates[j].Score
-		}
-		return candidates[i].ID > candidates[j].ID
-	})
+	// Candidate：候选池（当前全量；笔记量级上来后改成截断前 N 个，
+	// 并把分页从"位置偏移"切换成"分数游标"）
+	candidateLimit := FeedCandidateLimit
+	if candidateLimit > 0 && int64(len(candidates)) > int64(candidateLimit) {
+		candidates = candidates[:candidateLimit]
+	}
 
-	// 拉黑过滤：按作者去重后一次性查询
+	// 拉黑过滤：按作者去重后一次性查询（提前过滤，省得多样性阶段浪费位置）
 	blockedAuthors := make(map[int64]bool)
 	if userID > 0 && s.block != nil {
 		authorSet := make(map[int64]struct{}, len(candidates))
@@ -278,30 +281,38 @@ func (s *FeedService) getFeedPage(ctx context.Context, userID int64, cursorScore
 			}
 		}
 	}
-
-	// 作者去重（自己的笔记不限量）+ 位置分页
-	const maxPerAuthor = 2
-	authorCount := map[int64]int{}
-	full := make([]scoredFeedItem, 0, len(candidates))
-	for _, it := range candidates {
-		if blockedAuthors[it.AuthorID] {
-			continue
+	if len(blockedAuthors) > 0 {
+		filtered := candidates[:0]
+		for _, it := range candidates {
+			if !blockedAuthors[it.AuthorID] {
+				filtered = append(filtered, it)
+			}
 		}
-		if it.AuthorID != userID && authorCount[it.AuthorID] >= maxPerAuthor {
-			continue
-		}
-		full = append(full, it)
-		authorCount[it.AuthorID]++
+		candidates = filtered
 	}
 
-	if start >= int64(len(full)) {
+	// Rank：读时个性化排序（分数降序，同分 id 降序）
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].Score != candidates[j].Score {
+			return candidates[i].Score > candidates[j].Score
+		}
+		return candidates[i].ID > candidates[j].ID
+	})
+
+	// Diversity：MMR 多样性重排（替代"每作者最多 2 条"硬截断；自己的笔记不限量）
+	params := DefaultDiversityParams()
+	params.SkipLimitAuthorID = userID
+	candidates = diverseRank(candidates, topicIDsByNote, typeByNote, params)
+
+	// 位置分页（顺序稳定，不重不漏）
+	if start >= int64(len(candidates)) {
 		return []scoredFeedItem{}, start, nil
 	}
 	end := start + int64(limit)
-	if end > int64(len(full)) {
-		end = int64(len(full))
+	if end > int64(len(candidates)) {
+		end = int64(len(candidates))
 	}
-	return full[start:end], start, nil
+	return candidates[start:end], start, nil
 }
 
 // ensureFeedEngine 保证打分 ZSET 存在（不存在则重建，同用户单飞防惊群）

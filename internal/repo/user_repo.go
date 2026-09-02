@@ -2,6 +2,7 @@ package repo
 
 import (
 	"XFeedSystem/internal/model"
+	"XFeedSystem/internal/outbox"
 	"context"
 	"time"
 
@@ -16,7 +17,7 @@ type UserRepo interface {
 	CompareHashAndPassword(hash string, password string) error
 	GetProfile(uid int64) (*model.User, error)
 	GetByIDs(ids []int64) ([]*model.User, error)
-	Followbyid(ctx context.Context, user_id int64, follow_id int64) error
+	Followbyid(ctx context.Context, user_id int64, follow_id int64) (bool, error)
 	Delete(ctx context.Context, userID, followID int64) error
 	Exists(ctx context.Context, userID, followID int64) (bool, error)
 	GetFollowingIDs(ctx context.Context, userID int64) ([]int64, error)
@@ -27,12 +28,14 @@ type UserRepo interface {
 	FindByUsernames(ctx context.Context, usernames []string) ([]*model.User, error)
 }
 type GormUserRepo struct {
-	db *gorm.DB
+	db     *gorm.DB
+	outbox *outbox.Repo
 }
 
-func NewGormUserRepo(db *gorm.DB) *GormUserRepo {
+func NewGormUserRepo(db *gorm.DB, outbox *outbox.Repo) *GormUserRepo {
 	return &GormUserRepo{
-		db: db,
+		db:     db,
+		outbox: outbox,
 	}
 }
 
@@ -82,14 +85,18 @@ func (r *GormUserRepo) GetByIDs(ids []int64) ([]*model.User, error) {
 	}
 	return users, nil
 }
-func (r *GormUserRepo) Followbyid(ctx context.Context, user_id int64, follow_id int64) error {
+func (r *GormUserRepo) Followbyid(ctx context.Context, user_id int64, follow_id int64) (bool, error) {
 	follow := &model.Follow{
 		UserID:   user_id,
 		FollowID: follow_id,
 	}
-	return r.db.WithContext(ctx).
+	err := r.db.WithContext(ctx).
 		Clauses(clause.OnConflict{DoNothing: true}).
 		Create(follow).Error
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }
 func (r *GormUserRepo) Delete(ctx context.Context, userID, followID int64) error {
 	return r.db.WithContext(ctx).
