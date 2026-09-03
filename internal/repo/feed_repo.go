@@ -32,6 +32,8 @@ type FeedRepo interface {
 	RemoveFeedHide(ctx context.Context, userID, noteID int64) error
 	GetHiddenNoteIDs(ctx context.Context, userID int64) ([]int64, error)
 	CountHidesByType(ctx context.Context, userID int64) (map[int8]int64, error)
+	ListRecentByAuthor(ctx context.Context, authorID int64, limit int) ([]*model.Note, error)
+	GetFollowerCounts(ctx context.Context, userIDs []int64) (map[int64]int64, error)
 }
 
 func (r *GormFeedRepo) ListForYou(ctx context.Context, cursor *model.FeedCursor, limit int) ([]*model.Note, error) {
@@ -93,7 +95,7 @@ func (r *GormFeedRepo) ListFollowing(ctx context.Context, followIDs []int64, cur
 func (r *GormFeedRepo) GetByIDs(ctx context.Context, ids []int64) ([]*model.Note, error) {
 	var notes []*model.Note
 	err := r.db.WithContext(ctx).
-		Select("id", "author_id", "title", "content", "images", "type", "published_at").
+		Select("id", "author_id", "title", "content", "content_format", "images", "video_url", "type", "published_at").
 		Where("id IN ? AND status = ?", ids, model.NoteStatusPublished).
 		Order("published_at DESC").
 		Find(&notes).Error
@@ -344,4 +346,44 @@ func (r *GormFeedRepo) ListTopicIDsByNoteIDs(ctx context.Context, noteIDs []int6
 		out[r.NoteID] = append(out[r.NoteID], r.TopicID)
 	}
 	return out, nil
+}
+
+func (r *GormFeedRepo) GetFollowerCounts(ctx context.Context, userIDs []int64) (map[int64]int64, error) {
+	out := make(map[int64]int64, len(userIDs))
+	if len(userIDs) == 0 {
+		return out, nil
+	}
+	type row struct {
+		FollowID int64
+		C        int64
+	}
+	var rows []row
+	if err := r.db.WithContext(ctx).
+		Table("follows").
+		Select("follow_id, COUNT(*) AS c").
+		Where("follow_id IN ?", userIDs).
+		Group("follow_id").
+		Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	for _, r := range rows {
+		out[r.FollowID] = r.C
+	}
+	return out, nil
+}
+
+func (r *GormFeedRepo) ListRecentByAuthor(ctx context.Context, authorID int64, limit int) ([]*model.Note, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	var notes []*model.Note
+	err := r.db.WithContext(ctx).
+		Model(&model.Note{}).
+		Select("id", "author_id", "published_at").
+		Where("author_id = ? AND status = ?", authorID, model.NoteStatusPublished).
+		Order("published_at DESC").
+		Order("id DESC").
+		Limit(limit).
+		Find(&notes).Error
+	return notes, err
 }

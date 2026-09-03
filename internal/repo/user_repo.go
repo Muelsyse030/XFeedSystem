@@ -27,6 +27,8 @@ type UserRepo interface {
 	ListFollowers(ctx context.Context, userId int64, cursor time.Time, limit int) ([]*model.Follow, error)
 	SearchByUsername(ctx context.Context, keyword string, limit int) ([]*model.User, error)
 	FindByUsernames(ctx context.Context, usernames []string) ([]*model.User, error)
+	CountFollowers(ctx context.Context, followID int64) (int64, error)
+	ListFollowerIDsPage(ctx context.Context, followID int64, afterUserID int64, limit int) ([]int64, error)
 }
 type GormUserRepo struct {
 	db     *gorm.DB
@@ -200,4 +202,27 @@ func (r *GormUserRepo) FindByUsernames(ctx context.Context, usernames []string) 
 		Where("username IN ? AND status = 1", usernames).
 		Find(&users).Error
 	return users, err
+}
+
+func (r *GormUserRepo) CountFollowers(ctx context.Context, followID int64) (int64, error) {
+	var count int64
+	err := r.db.WithContext(ctx).Model(&model.Follow{}).Where("follow_id = ?", followID).Count(&count).Error
+	return count, err
+}
+
+func (r *GormUserRepo) ListFollowerIDsPage(ctx context.Context, followID int64, afterUserID int64, limit int) ([]int64, error) {
+	if limit <= 0 || limit > 2000 {
+		limit = 500
+	}
+	q := r.db.WithContext(ctx).
+		Model(&model.Follow{}).
+		Where("follow_id = ?", followID)
+	if afterUserID > 0 {
+		q = q.Where("user_id > ?", afterUserID)
+	}
+	var ids []int64
+	err := q.Order("user_id ASC").
+		Limit(limit).
+		Pluck("user_id", &ids).Error
+	return ids, err
 }

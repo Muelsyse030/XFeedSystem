@@ -65,8 +65,10 @@ func main() {
 	blockService := service.NewBlockService(repo.NewGormBlockRepo(db), userRepo, redisCache)
 	notifService := service.NewNotificationService(repo.NewGormNotificationRepo(db), userRepo, redisCache)
 	statsService := service.NewStatsService(repo.NewGormStatsRepo(db), redisCache)
-	feedService := service.NewFeedService(repo.NewGormFeedRepo(db), userRepo, redisCache, searchRepo, blockService, statsService)
+	feedRepo := repo.NewGormFeedRepo(db)
+	feedService := service.NewFeedService(feedRepo, userRepo, redisCache, searchRepo, blockService, statsService)
 	noteRepo := repo.NewGormNoteRepo(db, outboxRepo)
+	followingFanout := service.NewFollowingFanoutService(feedRepo, userRepo, noteRepo, redisCache)
 
 	// 计数器落库与打分周期重算只保留一份：
 	// 原来它们挂在每个 API 实例上，多实例后会重复执行（计数器还会重复累加），
@@ -110,7 +112,7 @@ func main() {
 		logger.Sugar.Infof("consumer %s (batch) 已启动", group)
 	}
 
-	start(events.GroupFeed, feedHandler(feedService, redisCache))
+	start(events.GroupFeed, feedHandler(feedService, followingFanout, redisCache))
 	start(events.GroupSearch, searchHandler(searchRepo, noteRepo))
 	startBatch(events.GroupNotify, notifyBatchHandler(notifService, userRepo, blockService))
 	startEventMonitor(ctx, db, queue.NewStream(streamClient), 10*time.Second)
@@ -133,21 +135,40 @@ func main() {
 // note.deleted → 移除。ZSET 变了再失效页字节缓存。
 // 为什么 feed 也要消费互动事件：打分公式里 like/favorite/comment 计数会变，
 // 分数不重算 Feed 就不更新（这正是当前 API 里 invalidateNoteFeed 干的事）。
-func feedHandler(feed *service.FeedService, rc *cache.RedisCache) queue.Handler {
+func feedHandler(feed *service.FeedService, fanout *service.FollowingFanoutService, rc *cache.RedisCache) queue.Handler {
 	return func(ctx context.Context, typ string, p events.Payload) error {
 		switch typ {
-		case events.NoteCreated, events.NoteUpdated:
+		case events.NoteCreated:
 			if err := feed.UpsertNoteScore(ctx, p.NoteID); err != nil {
 				return err
 			}
-			// 候选集合变化：全局失效，让新笔记尽快出现在所有人首页
+			if err := fanout.HandleNoteCreated(ctx, p); err != nil {
+				return err
+			}
+			// 候选集合变化:全局失效,让新笔记尽快出现在所有人首页
 			return rc.InvalidateFeedRawAll(ctx)
+		case events.NoteUpdated:
+			if err := feed.UpsertNoteScore(ctx, p.NoteID); err != nil {
+				return err
+			}
+			return fanout.HandleNoteUpdated(ctx, p)
 		case events.NoteDeleted:
 			if err := feed.RemoveNoteScore(ctx, p.NoteID); err != nil {
 				return err
 			}
+			if err := fanout.HandleNoteDeleted(ctx, p); err != nil {
+				return err
+			}
 			return rc.InvalidateFeedRawAll(ctx)
-		case events.UserFollowed, events.UserUnfollowed:
+		case events.UserFollowed:
+			if err := fanout.HandleUserFollowed(ctx, p); err != nil {
+				return err
+			}
+			return rc.InvalidateFeedRawForUser(ctx, p.ActorID)
+		case events.UserUnfollowed:
+			if err := fanout.HandleUserUnfollowed(ctx, p); err != nil {
+				return err
+			}
 			return rc.InvalidateFeedRawForUser(ctx, p.ActorID)
 		default:
 			return nil

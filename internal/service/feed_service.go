@@ -65,16 +65,19 @@ type FeedListResponse struct {
 }
 
 type FeedService struct {
-	repo     *repo.GormFeedRepo
-	userRepo *repo.GormUserRepo
-	cache    *cache.RedisCache
-	search   *repo.SearchRepo
-	block    *BlockService
-	stats    *StatsService
+	repo      *repo.GormFeedRepo
+	userRepo  *repo.GormUserRepo
+	cache     *cache.RedisCache
+	search    *repo.SearchRepo
+	block     *BlockService
+	stats     *StatsService
+	following *FollowingFeedService
 }
 
 func NewFeedService(r *repo.GormFeedRepo, u *repo.GormUserRepo, c *cache.RedisCache, s *repo.SearchRepo, b *BlockService, st *StatsService) *FeedService {
-	return &FeedService{repo: r, userRepo: u, cache: c, search: s, block: b, stats: st}
+	fs := &FeedService{repo: r, userRepo: u, cache: c, search: s, block: b, stats: st}
+	fs.following = NewFollowingFeedService(r, u, c, b, fs)
+	return fs
 }
 
 func (s *FeedService) ListForYou(ctx context.Context, cursorStr string, limit int, currentUserID int64) (*FeedListResponse, error) {
@@ -437,30 +440,9 @@ func (s *FeedService) buildFeedResponse(ctx context.Context, notes []*model.Note
 }
 
 func (s *FeedService) ListFollowing(ctx context.Context, userID int64, cursorStr string, limit int) (*FeedListResponse, error) {
-	feedCursor, err := cursor.ParseFeedCursor(cursorStr)
-	if err != nil {
-		return nil, err
-	}
-	followIDs, err := s.getFollowingIDs(ctx, userID)
-	// followIDs, err := s.userRepo.GetFollowingIDs(ctx, userID)
-	if err != nil {
-		return nil, err
-	}
-
-	if len(followIDs) == 0 {
-		return &FeedListResponse{
-			Items:      []model.FeedItem{},
-			NextCursor: "",
-		}, nil
-	}
-
-	notes, err := s.repo.ListFollowing(ctx, followIDs, feedCursor, limit)
-	if err != nil {
-		return nil, err
-	}
-	notes = s.filterBlockedNotes(ctx, userID, notes)
-	return s.buildFeedResponse(ctx, notes)
+	return s.following.List(ctx, userID, cursorStr, limit)
 }
+
 func (s *FeedService) getFollowingIDs(ctx context.Context, userID int64) ([]int64, error) {
 	key := cache.FollowingIDsKey(userID)
 	if s.cache != nil {
