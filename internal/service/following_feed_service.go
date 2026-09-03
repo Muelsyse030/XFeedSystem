@@ -25,22 +25,11 @@ type FollowingFeedService struct {
 	feed     *FeedService // 复用响应组装 / 批量用户查询
 }
 
-func NewFollowingFeedService(
-	fr *repo.GormFeedRepo,
-	ur *repo.GormUserRepo,
-	c *cache.RedisCache,
-	b *BlockService,
-	fs *FeedService,
-) *FollowingFeedService {
+func NewFollowingFeedService(fr *repo.GormFeedRepo, ur *repo.GormUserRepo, c *cache.RedisCache, b *BlockService, fs *FeedService) *FollowingFeedService {
 	return &FollowingFeedService{repo: fr, userRepo: ur, cache: c, block: b, feed: fs}
 }
 
-func (s *FollowingFeedService) List(
-	ctx context.Context,
-	userID int64,
-	cursorStr string,
-	limit int,
-) (*FeedListResponse, error) {
+func (s *FollowingFeedService) List(ctx context.Context, userID int64, cursorStr string, limit int) (*FeedListResponse, error) {
 	feedCursor, err := cursor.ParseFeedCursor(cursorStr)
 	if err != nil {
 		return nil, err
@@ -61,9 +50,7 @@ func (s *FollowingFeedService) List(
 	}
 
 	// Redis Timeline 优先；Redis miss/异常/翻页越过缓存窗口时，MySQL 兜底。
-	redisNotes, redisOK, redisErr := s.readRedisTimeline(
-		ctx, userID, followIDs, cursorMillis, cursorNoteID, hasCursor, limit,
-	)
+	redisNotes, redisOK, redisErr := s.readRedisTimeline(ctx, userID, followIDs, cursorMillis, cursorNoteID, hasCursor, limit)
 	if redisErr != nil {
 		redisNotes, redisOK = nil, false // Redis/辅助查询失败 → 降级 MySQL，不让请求失败
 	}
@@ -97,15 +84,7 @@ func (s *FollowingFeedService) getFollowingIDs(ctx context.Context, userID int64
 
 // readRedisTimeline 从 Redis 读取并返回按 (published_at, noteID) 倒序的水合结果。
 // ok=false 表示走 MySQL 兜底（key 不存在 / 空 / 超出缓存窗口）。
-func (s *FollowingFeedService) readRedisTimeline(
-	ctx context.Context,
-	userID int64,
-	followIDs []int64,
-	cursorMillis int64,
-	cursorNoteID int64,
-	hasCursor bool,
-	limit int,
-) ([]*model.Note, bool, error) {
+func (s *FollowingFeedService) readRedisTimeline(ctx context.Context, userID int64, followIDs []int64, cursorMillis int64, cursorNoteID int64, hasCursor bool, limit int) ([]*model.Note, bool, error) {
 	if s.cache == nil {
 		return nil, false, nil
 	}
@@ -159,12 +138,7 @@ func (s *FollowingFeedService) readRedisTimeline(
 
 // filterCandidateIDs Redis 候选只按 ID 排好序，还没碰过 MySQL：
 // 先批量查出 author_id，做 follow（Unfollow 竞态）与 block 过滤，再做水合。
-func (s *FollowingFeedService) filterCandidateIDs(
-	ctx context.Context,
-	userID int64,
-	followIDs []int64,
-	noteIDs []int64,
-) ([]int64, error) {
+func (s *FollowingFeedService) filterCandidateIDs(ctx context.Context, userID int64, followIDs []int64, noteIDs []int64) ([]int64, error) {
 	if len(noteIDs) == 0 {
 		return nil, nil
 	}
@@ -206,12 +180,7 @@ func (s *FollowingFeedService) filterCandidateIDs(
 }
 
 // filterNotesByFollowAndBlock MySQL fallback 结果的 Follow/Block 读时校验
-func (s *FollowingFeedService) filterNotesByFollowAndBlock(
-	ctx context.Context,
-	userID int64,
-	followIDs []int64,
-	notes []*model.Note,
-) []*model.Note {
+func (s *FollowingFeedService) filterNotesByFollowAndBlock(ctx context.Context, userID int64, followIDs []int64, notes []*model.Note) []*model.Note {
 	if len(notes) == 0 {
 		return notes
 	}
@@ -363,14 +332,7 @@ type timelineMergeSource struct {
 	exhausted    bool
 }
 
-func newTimelineMergeSource(
-	c *cache.RedisCache,
-	key string,
-	cursorMillis int64,
-	cursorNoteID int64,
-	hasCursor bool,
-	pageSize int,
-) *timelineMergeSource {
+func newTimelineMergeSource(c *cache.RedisCache, key string, cursorMillis int64, cursorNoteID int64, hasCursor bool, pageSize int) *timelineMergeSource {
 	return &timelineMergeSource{
 		cache:        c,
 		key:          key,
@@ -439,11 +401,7 @@ func (h *followingItemHeap) Pop() interface{} {
 }
 
 // mergeTimelineItems 把 K 条有序流归并成一条全局有序、去重的候选序列
-func mergeTimelineItems(
-	ctx context.Context,
-	sources []*timelineMergeSource,
-	need int,
-) ([]cache.TimelineItem, error) {
+func mergeTimelineItems(ctx context.Context, sources []*timelineMergeSource, need int) ([]cache.TimelineItem, error) {
 	if need <= 0 || len(sources) == 0 {
 		return nil, nil
 	}
@@ -457,7 +415,6 @@ func mergeTimelineItems(
 			heap.Push(h, timelineHeapItem{item: item, src: src})
 		}
 	}
-
 	out := make([]cache.TimelineItem, 0, need)
 	seen := make(map[int64]struct{}, need)
 	for h.Len() > 0 && len(out) < need {

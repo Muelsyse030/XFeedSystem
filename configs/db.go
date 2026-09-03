@@ -2,6 +2,7 @@ package configs
 
 import (
 	"XFeedSystem/internal/outbox"
+	"os"
 	"time"
 
 	"XFeedSystem/internal/model"
@@ -12,7 +13,8 @@ import (
 
 func InitDB(dsn string) *gorm.DB {
 	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{
-		PrepareStmt: true, // 消融实验：预编译语句，减少 GORM 反射与 MySQL SQL 解析
+		// PrepareStmt 默认开启；XFEED_PREPARE_STMT=0 关闭（消融/诊断用）
+		PrepareStmt: os.Getenv("XFEED_PREPARE_STMT") != "0",
 	})
 	if err != nil {
 		panic("无法连接到数据库: " + err.Error())

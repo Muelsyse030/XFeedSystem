@@ -33,12 +33,7 @@ type FollowingFanoutService struct {
 	cache    *cache.RedisCache
 }
 
-func NewFollowingFanoutService(
-	fr *repo.GormFeedRepo,
-	ur *repo.GormUserRepo,
-	nr *repo.GormNoteRepo,
-	c *cache.RedisCache,
-) *FollowingFanoutService {
+func NewFollowingFanoutService(fr *repo.GormFeedRepo, ur *repo.GormUserRepo, nr *repo.GormNoteRepo, c *cache.RedisCache) *FollowingFanoutService {
 	return &FollowingFanoutService{feedRepo: fr, userRepo: ur, noteRepo: nr, cache: c}
 }
 
