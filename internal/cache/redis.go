@@ -475,6 +475,15 @@ func (c *RedisCache) IncrByMany(ctx context.Context, keys []string, deltas []int
 	return err
 }
 
+func (c *RedisCache) InvalidateFollowingRawForUser(ctx context.Context, userID int64) error {
+	u := strconv.FormatInt(userID, 10)
+	return c.DeleteByPattern(ctx, FollowingRawPrefix()+u+":*")
+}
+
+func (c *RedisCache) InvalidateFollowingRawAll(ctx context.Context) error {
+	return c.DeleteByPattern(ctx, FollowingRawPrefix()+"*")
+}
+
 func BlockedIDsKey(userID int64) string {
 	return fmt.Sprintf("block:blocked:%d", userID)
 }
@@ -578,4 +587,20 @@ func CounterCommentKey(noteID int64) string {
 
 func CounterPrefix() string {
 	return "counter:"
+}
+
+func FollowingIDsFlagKey(userID int64) string {
+	return fmt.Sprintf("follow:followingflag:%d", userID)
+}
+
+func FollowingCountKey(authorID int64) string {
+	return fmt.Sprintf("follow:count:%d", authorID)
+}
+
+func FollowingRawKey(userID int64, limit int, cursor string) string {
+	return fmt.Sprintf("feed:following:raw:%d:%d:%s", userID, limit, cursor)
+}
+
+func FollowingRawPrefix() string {
+	return "feed:following:raw:"
 }

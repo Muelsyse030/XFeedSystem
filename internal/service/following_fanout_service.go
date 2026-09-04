@@ -7,14 +7,14 @@ import (
 	"XFeedSystem/internal/repo"
 	"context"
 	"errors"
+	"os"
+	"strconv"
 
 	"gorm.io/gorm"
 )
 
 // Following 配置集中在同一处，避免阈值/容量散落在代码里。
 const (
-	// FollowingFanoutThreshold 粉丝数达到该值走 Celebrity Pull（Fan-out on Read）
-	FollowingFanoutThreshold = 10_000
 	// FollowingTimelineSize Redis Timeline 保留的最近条数
 	FollowingTimelineSize = 800
 	// FollowingFanoutBatchSize 每个 Redis Pipeline 的粉丝批大小
@@ -22,6 +22,18 @@ const (
 	// FollowingBackfillLimit Follow 回填 / 冷启动 materialize 拉取每个作者的最近条数
 	FollowingBackfillLimit = 100
 )
+
+// FollowingFanoutThreshold 粉丝数达到该值走 Celebrity Pull（Fan-out on Read）。
+// 默认 10,000；可用环境变量 XFEED_FOLLOWING_THRESHOLD 覆盖（压测/调参用）。
+var FollowingFanoutThreshold int64 = 10_000
+
+func init() {
+	if v := os.Getenv("XFEED_FOLLOWING_THRESHOLD"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			FollowingFanoutThreshold = n
+		}
+	}
+}
 
 // FollowingFanoutService 写路径：NoteCreated Fanout / NoteDeleted 清理 /
 // UserFollowed Backfill / UserUnfollowed Cleanup。

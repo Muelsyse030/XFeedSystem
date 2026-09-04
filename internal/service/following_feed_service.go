@@ -8,6 +8,7 @@ import (
 	"container/heap"
 	"context"
 	"fmt"
+	"strconv"
 	"time"
 )
 
@@ -24,6 +25,11 @@ type FollowingFeedService struct {
 	block    *BlockService
 	feed     *FeedService // 复用响应组装 / 批量用户查询
 }
+
+const (
+	// followingFollowerCountTTL 粉丝数缓存 TTL（低频变化）
+	followingFollowerCountTTL = 60 * time.Second
+)
 
 func NewFollowingFeedService(fr *repo.GormFeedRepo, ur *repo.GormUserRepo, c *cache.RedisCache, b *BlockService, fs *FeedService) *FollowingFeedService {
 	return &FollowingFeedService{repo: fr, userRepo: ur, cache: c, block: b, feed: fs}
@@ -94,8 +100,8 @@ func (s *FollowingFeedService) readRedisTimeline(ctx context.Context, userID int
 		return nil, false, nil // 冷启动：交给 MySQL fallback
 	}
 
-	// Celebrity 判定：follower_count >= threshold 的作者走 Pull
-	counts, err := s.repo.GetFollowerCounts(ctx, followIDs)
+	// Celebrity 判定：follower_count >= threshold 的作者走 Pull（带 60s 缓存）
+	counts, err := s.getFollowerCounts(ctx, followIDs)
 	if err != nil {
 		return nil, false, err
 	}
@@ -126,14 +132,11 @@ func (s *FollowingFeedService) readRedisTimeline(ctx context.Context, userID int
 	for _, it := range merged {
 		ids = append(ids, it.NoteID)
 	}
-	keepIDs, err := s.filterCandidateIDs(ctx, userID, followIDs, ids)
-	if err != nil {
-		return nil, true, err
-	}
-	if len(keepIDs) == 0 {
+	hydrated := s.hydrateAndFilterNotes(ctx, userID, followIDs, ids)
+	if len(hydrated) == 0 {
 		return []*model.Note{}, true, nil
 	}
-	return s.hydrateNotes(ctx, keepIDs), true, nil
+	return hydrated, true, nil
 }
 
 // filterCandidateIDs Redis 候选只按 ID 排好序，还没碰过 MySQL：
@@ -315,6 +318,90 @@ func (s *FollowingFeedService) materializeTimelineAsync(userID int64, followIDs 
 			_ = s.cache.ZAddTimelineBatch(ctx, adds)
 		}
 	})
+}
+
+func (s *FollowingFeedService) getFollowerCounts(ctx context.Context, followIDs []int64) (map[int64]int64, error) {
+	out := make(map[int64]int64, len(followIDs))
+	if len(followIDs) == 0 || s.cache == nil {
+		return s.repo.GetFollowerCounts(ctx, followIDs)
+	}
+	keys := make([]string, 0, len(followIDs))
+	for _, id := range followIDs {
+		keys = append(keys, cache.FollowingCountKey(id))
+	}
+	missing := make([]int64, 0, len(followIDs))
+	vals, err := s.cache.MGet(ctx, keys...)
+	if err != nil {
+		missing = append(missing, followIDs...)
+	} else {
+		for i, v := range vals {
+			if v == "" {
+				missing = append(missing, followIDs[i])
+				continue
+			}
+			if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+				out[followIDs[i]] = n
+			} else {
+				missing = append(missing, followIDs[i])
+			}
+		}
+	}
+	if len(missing) > 0 {
+		dbCounts, err := s.repo.GetFollowerCounts(ctx, missing)
+		if err != nil {
+			if len(out) == 0 {
+				return nil, err
+			}
+			return out, nil // 部分命中可用，不阻塞
+		}
+		for id, c := range dbCounts {
+			out[id] = c
+			_ = s.cache.Set(ctx, cache.FollowingCountKey(id), strconv.FormatInt(c, 10), followingFollowerCountTTL)
+		}
+	}
+	return out, nil
+}
+
+func (s *FollowingFeedService) hydrateAndFilterNotes(ctx context.Context, userID int64, followIDs []int64, noteIDs []int64) []*model.Note {
+	if len(noteIDs) == 0 || s.cache == nil {
+		return nil
+	}
+	notes, err := s.repo.GetByIDs(ctx, noteIDs)
+	if err != nil || len(notes) == 0 {
+		return nil
+	}
+	byID := make(map[int64]*model.Note, len(notes))
+	for _, n := range notes {
+		byID[n.ID] = n
+	}
+	followSet := make(map[int64]struct{}, len(followIDs))
+	for _, id := range followIDs {
+		followSet[id] = struct{}{}
+	}
+	var blockedSet map[int64]struct{}
+	if s.block != nil {
+		if blocked, err := s.block.GetBlockedIDs(ctx, userID); err == nil && len(blocked) > 0 {
+			blockedSet = make(map[int64]struct{}, len(blocked))
+			for _, id := range blocked {
+				blockedSet[id] = struct{}{}
+			}
+		}
+	}
+	out := make([]*model.Note, 0, len(noteIDs))
+	for _, id := range noteIDs {
+		n := byID[id]
+		if n == nil {
+			continue // 已删除/未发布
+		}
+		if _, ok := followSet[n.AuthorID]; !ok {
+			continue // Unfollow 竞态 / stale fanout
+		}
+		if _, bad := blockedSet[n.AuthorID]; bad {
+			continue
+		}
+		out = append(out, n)
+	}
+	return out
 }
 
 // ---------- K-way Merge（container/heap 大顶堆） ----------

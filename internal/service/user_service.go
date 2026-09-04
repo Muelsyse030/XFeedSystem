@@ -134,7 +134,10 @@ func (s *UserService) Follow(ctx context.Context, userID int64, followID int64) 
 	}
 	if created && s.cache != nil {
 		key := cache.FollowingIDsKey(userID)
-		_ = s.cache.SAdd(ctx, key, followID) // 只有真的新增关注才更新缓存
+		_ = s.cache.SAdd(ctx, key, followID)
+		_ = s.cache.Set(ctx, cache.FollowingIDsFlagKey(userID), "1", 30*time.Minute)
+		// 关注集合变了 → following 页缓存立即失效（用户私有，按模式删）
+		_ = s.cache.InvalidateFollowingRawForUser(ctx, userID)
 	}
 	return nil
 }
@@ -151,8 +154,9 @@ func (s *UserService) Unfollow(ctx context.Context, userID int64, followID int64
 	if s.cache != nil {
 		key := cache.FollowingIDsKey(userID)
 		_ = s.cache.SRem(ctx, key, followID)
-		// 关注集合变了 → 该用户已缓存的个性化 feed 页立即失效（用户私有缓存，多实例安全）
-		_ = s.cache.InvalidateFeedRawForUser(ctx, userID)
+		_ = s.cache.Set(ctx, cache.FollowingIDsFlagKey(userID), "1", 30*time.Minute)
+		_ = s.cache.InvalidateFeedRawForUser(ctx, userID)      // foryou 页
+		_ = s.cache.InvalidateFollowingRawForUser(ctx, userID) // following 页
 	}
 	return nil
 }

@@ -445,21 +445,27 @@ func (s *FeedService) ListFollowing(ctx context.Context, userID int64, cursorStr
 
 func (s *FeedService) getFollowingIDs(ctx context.Context, userID int64) ([]int64, error) {
 	key := cache.FollowingIDsKey(userID)
+	flagKey := cache.FollowingIDsFlagKey(userID)
 	if s.cache != nil {
-		ids, err := s.cache.SMembers(ctx, key)
-		if err == nil {
-			return ids, nil
-		}
-		if err != cache.ErrRedisMiss {
+		if ok, _ := s.cache.Exists(ctx, flagKey); ok {
+			ids, err := s.cache.SMembers(ctx, key)
+			if err == nil {
+				return ids, nil
+			}
+			if err != cache.ErrRedisMiss {
+				return nil, err
+			}
 		}
 	}
 	ids, err := s.userRepo.GetFollowingIDs(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
-	if s.cache != nil && len(ids) > 0 {
-		_ = s.cache.SAdd(ctx, key, ids...)
-		_ = s.cache.Expire(ctx, key, 30*time.Minute)
+	if s.cache != nil {
+		if len(ids) > 0 {
+			_ = s.cache.SAdd(ctx, key, ids...)
+		}
+		_ = s.cache.Set(ctx, flagKey, "1", 30*time.Minute)
 	}
 	return ids, nil
 }

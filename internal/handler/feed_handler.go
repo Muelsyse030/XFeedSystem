@@ -3,6 +3,7 @@ package handler
 import (
 	"encoding/json"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -84,35 +85,40 @@ func (h *FeedHandler) List(c *gin.Context) {
 	case "following":
 		uidValue, exists := c.Get("userID")
 		if !exists {
-			c.JSON(http.StatusUnauthorized, gin.H{
-				"code":    4010,
-				"message": "unauthorized",
-			})
+			c.JSON(http.StatusUnauthorized, gin.H{"code": 4010, "message": "unauthorized"})
+			return
+		}
+		userID, ok := uidValue.(int64)
+		if !ok {
+			c.JSON(http.StatusUnauthorized, gin.H{"code": 4011, "message": "invalid user id"})
 			return
 		}
 
-		userID, ok := uidValue.(int64)
-		if !ok {
-			c.JSON(http.StatusUnauthorized, gin.H{
-				"code":    4011,
-				"message": "invalid user id",
-			})
-			return
+		// 3s 原始字节缓存：短 TTL 保新鲜，命中零序列化直接返回
+		// XFEED_FOLLOWING_RAW_CACHE=0 可关闭（穿透消融用）
+		cacheKey := ""
+		if h.cache != nil && os.Getenv("XFEED_FOLLOWING_RAW_CACHE") != "0" {
+			cacheKey = cache.FollowingRawKey(userID, limit, cursorStr)
+			if body, err := h.cache.Get(c.Request.Context(), cacheKey); err == nil {
+				c.Data(http.StatusOK, "application/json; charset=utf-8", []byte(body))
+				return
+			}
 		}
 
 		feedList, err := h.feedService.ListFollowing(c.Request.Context(), userID, cursorStr, limit)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"code":    5002,
-				"message": err.Error(),
-			})
+			c.JSON(http.StatusInternalServerError, gin.H{"code": 5002, "message": err.Error()})
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{
-			"code":    0,
-			"message": "ok",
-			"data":    feedList,
-		})
+		body, err := json.Marshal(gin.H{"code": 0, "message": "ok", "data": feedList})
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"code": 5002, "message": err.Error()})
+			return
+		}
+		if h.cache != nil && cacheKey != "" {
+			_ = h.cache.Set(c.Request.Context(), cacheKey, string(body), 3*time.Second)
+		}
+		c.Data(http.StatusOK, "application/json; charset=utf-8", body)
 		return
 	default:
 		c.JSON(http.StatusBadRequest, gin.H{
