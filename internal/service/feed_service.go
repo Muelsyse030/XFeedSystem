@@ -340,43 +340,44 @@ func (s *FeedService) getFeedPage(ctx context.Context, userID int64, cursorScore
 
 // ensureFeedEngine 保证打分 ZSET 存在（不存在则重建，同用户单飞防惊群）
 func (s *FeedService) ensureFeedEngine(ctx context.Context, key string) error {
-	ok, err := s.cache.Exists(ctx, key)
-	if err != nil {
-		return err
-	}
-	if ok {
-		return nil
-	}
-	lock := engineLockFor(0)
-	lock.Lock()
-	defer lock.Unlock()
-	ok, _ = s.cache.Exists(ctx, key)
-	if ok {
-		return nil
-	}
-	return s.buildFeedEngine(ctx, key)
+	return s.cache.EnsureGlobalFeed(ctx, key, s.loadFeedScores)
 }
 
-// buildFeedEngine 全量重建打分 ZSET（全部已发布笔记，含用户关注/类型偏好加权）
-func (s *FeedService) buildFeedEngine(ctx context.Context, key string) error {
+func (s *FeedService) loadFeedScores(ctx context.Context) (map[int64]int64, error) {
 	notes, err := s.repo.ListAllPublished(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
+
+	var stats map[int64]*model.NoteStats
+	if s.stats != nil && len(notes) > 0 {
+		ids := make([]int64, len(notes))
+		for i, note := range notes {
+			ids[i] = note.ID
+		}
+
+		stats, err = s.stats.GetStatsMap(ctx, ids)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	now := time.Now()
 	scores := make(map[int64]int64, len(notes))
-	var stats map[int64]*model.NoteStats
-	if s.stats != nil {
-		ids := make([]int64, len(notes))
-		for i, n := range notes {
-			ids[i] = n.ID
-		}
-		stats, _ = s.stats.GetStatsMap(ctx, ids)
+	for _, note := range notes {
+		scores[note.ID] = foldScore(
+			baseScore(note, now, stats[note.ID]),
+			note.ID,
+		)
 	}
-	for _, n := range notes {
-		scores[n.ID] = foldScore(baseScore(n, now, stats[n.ID]), n.ID)
+	return scores, nil
+}
+
+func (s *FeedService) buildFeedEngine(ctx context.Context, key string) error {
+	if err := s.cache.InvalidateGlobalFeed(ctx, key); err != nil {
+		return err
 	}
-	return s.cache.ZAddFeed(ctx, key, scores, 0) // 0 = 不过期，靠写路径增量维护
+	return s.ensureFeedEngine(ctx, key)
 }
 
 func (s *FeedService) buildFeedResponse(ctx context.Context, notes []*model.Note) (*FeedListResponse, error) {
@@ -606,9 +607,7 @@ func (s *FeedService) filterBlockedNotes(ctx context.Context, userID int64, note
 	return filtered
 }
 
-// 增量：新笔记/互动后，单条写入全局基础分 ZSET
 func (s *FeedService) UpsertNoteScore(ctx context.Context, noteID int64) error {
-	// 先确保打分 ZSET 存在：避免"全量失效后单条 ZADD 重建出只有 1 条的 ZSET"的竞态
 	if err := s.ensureFeedEngine(ctx, cache.FeedEngineKey(0)); err != nil {
 		return err
 	}
@@ -623,38 +622,53 @@ func (s *FeedService) UpsertNoteScore(ctx context.Context, noteID int64) error {
 		}
 	}
 	sc := baseScore(note, time.Now(), st)
-	return s.cache.ZAddNote(ctx, cache.FeedEngineKey(0), noteID, foldScore(sc, noteID))
+	return s.cache.PutGlobalFeedScores(ctx, cache.FeedEngineKey(0), map[int64]int64{noteID: foldScore(sc, noteID)})
 }
 
-// 删笔记时单条移除
 func (s *FeedService) RemoveNoteScore(ctx context.Context, noteID int64) error {
-	return s.cache.ZRemNote(ctx, cache.FeedEngineKey(0), noteID)
+	return s.cache.RemoveGlobalFeedNotes(ctx, cache.FeedEngineKey(0), noteID)
 }
 
 // 只重算 24h 内新笔记池
 func (s *FeedService) RescoreRecentNotes(ctx context.Context) error {
+	if s.cache == nil {
+		return nil
+	}
+
 	since := time.Now().Add(-DecayFreezeHours * time.Hour)
-	notes, err := s.repo.ListSince(ctx, since, 5000) // 复用已有 ListSince
+	notes, err := s.repo.ListSince(ctx, since, 5000)
 	if err != nil {
 		return err
 	}
-	if s.cache == nil || len(notes) == 0 {
+	if len(notes) == 0 {
 		return nil
 	}
-	now := time.Now()
+
 	ids := make([]int64, len(notes))
-	for i, n := range notes {
-		ids[i] = n.ID
+	for i, note := range notes {
+		ids[i] = note.ID
 	}
+
 	var statsMap map[int64]*model.NoteStats
 	if s.stats != nil {
-		statsMap, _ = s.stats.GetStatsMap(ctx, ids)
+		statsMap, err = s.stats.GetStatsMap(ctx, ids)
+		if err != nil {
+			return err
+		}
 	}
-	for _, n := range notes {
-		sc := baseScore(n, now, statsMap[n.ID])
-		_ = s.cache.ZAddNote(ctx, cache.FeedEngineKey(0), n.ID, foldScore(sc, n.ID))
+
+	now := time.Now()
+	scores := make(map[int64]int64, len(notes))
+	for _, note := range notes {
+		sc := baseScore(note, now, statsMap[note.ID])
+		scores[note.ID] = foldScore(sc, note.ID)
 	}
-	return nil
+
+	return s.cache.PutGlobalFeedScores(
+		ctx,
+		cache.FeedEngineKey(0),
+		scores,
+	)
 }
 
 // 后台周期重算（替代 60s 全量重建）
@@ -698,7 +712,9 @@ func (s *FeedService) ReconcileFeedEngine(ctx context.Context) error {
 	}
 	if diff > 50 && diff > dbN/10 {
 		logger.Sugar.Warnf("feed engine mismatch zset=%d db=%d, rebuild", zsN, dbN)
-		_ = s.cache.Delete(ctx, key)
+		if err := s.cache.InvalidateGlobalFeed(ctx, key); err != nil {
+			return err
+		}
 		return s.ensureFeedEngine(ctx, key)
 	}
 	return nil
